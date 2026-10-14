@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.14)   # FetchContent_MakeAvailable
 
 project(cmf
   VERSION 1.0.0
-  DESCRIPTION "CMF venue driver and a worked example"
+  DESCRIPTION "CMF venue driver and backtest app"
   LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -15,19 +15,6 @@ endif()
 
 # ---------------------------------------------------------------------------
 # asio, standalone
-#
-# Fetched rather than vendored so there is one line to change when it moves.
-# The tag is pinned: a floating branch would mean two people building this at
-# different times compile against different headers, which is the one thing a
-# reproducible backtest cannot afford.
-#
-# Offline or behind a proxy? Point CMake at a copy you already have and nothing
-# is downloaded:
-#
-#     cmake -B build -DFETCHCONTENT_SOURCE_DIR_ASIO=/path/to/asio
-#
-# asio's repository has no CMakeLists.txt of its own, so this only unpacks the
-# sources; the target below is ours.
 # ---------------------------------------------------------------------------
 set(CMF_ASIO_TAG "asio-1-30-2" CACHE STRING "Git tag of the asio release to build against")
 
@@ -41,6 +28,19 @@ FetchContent_Declare(asio
 
 FetchContent_MakeAvailable(asio)
 
+# ---------------------------------------------------------------------------
+# toml++
+# ---------------------------------------------------------------------------
+set(CMF_TOMLPP_TAG "v3.4.0" CACHE STRING "Git tag of toml++")
+
+FetchContent_Declare(tomlplusplus
+  GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
+  GIT_TAG        ${CMF_TOMLPP_TAG}
+  GIT_SHALLOW    TRUE
+  GIT_PROGRESS   TRUE)
+
+FetchContent_MakeAvailable(tomlplusplus)
+
 find_package(Threads REQUIRED)
 
 add_library(asio_standalone INTERFACE)
@@ -51,29 +51,42 @@ target_compile_definitions(asio_standalone INTERFACE ASIO_STANDALONE ASIO_NO_DEP
 target_link_libraries(asio_standalone INTERFACE Threads::Threads)
 
 # ---------------------------------------------------------------------------
-# The driver: one header, no sources.
+# Public protocol driver (header-only) — include/cmf/
 # ---------------------------------------------------------------------------
 add_library(cmf_driver INTERFACE)
 add_library(cmf::driver ALIAS cmf_driver)
 
 target_include_directories(cmf_driver INTERFACE
-  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>")
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>")
 target_link_libraries(cmf_driver INTERFACE cmf::asio)
 target_sources(cmf_driver INTERFACE
-  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/cmf_driver.hpp>")
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/cmf/cmf_driver.hpp>")
 
 # ---------------------------------------------------------------------------
-# The worked example.
-#
-# It is built as `backtest` because that is the name the engine looks for, and
-# it looks for it next to itself. Copy the result there and a run works; keep
-# the name when you replace the example with your own venue.
+# Venue library (private sources) — src/
 # ---------------------------------------------------------------------------
-add_executable(backtest example_venue.cc)
-target_link_libraries(backtest PRIVATE cmf::driver)
+add_library(venue_lib
+  src/config/config.cc
+  src/venue/venue.cc)
+add_library(cmf::venue ALIAS venue_lib)
+
+target_include_directories(venue_lib
+  PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>"
+  PRIVATE
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>")
+target_link_libraries(venue_lib PUBLIC cmf::driver PRIVATE tomlplusplus::tomlplusplus)
+
+# ---------------------------------------------------------------------------
+# App entrypoint — apps/backtest → binary name `backtest` (engine looks for it)
+# ---------------------------------------------------------------------------
+add_executable(backtest apps/backtest/main.cc)
+target_link_libraries(backtest PRIVATE cmf::venue)
 
 if(MSVC)
+  target_compile_options(venue_lib PRIVATE /W4)
   target_compile_options(backtest PRIVATE /W4)
 else()
+  target_compile_options(venue_lib PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(backtest PRIVATE -Wall -Wextra -Wpedantic)
 endif()

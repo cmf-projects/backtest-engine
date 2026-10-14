@@ -1,0 +1,12 @@
+# Venue / backtest binary settings.
+# Override path: CONFIG=/abs/path/to/config.toml
+
+host = "127.0.0.1"
+feed_port = 9001
+order_port = 9002
+
+dataset = "data/converted/fceu_20260408/FCEU_SI_20260615_PS.jsonl"
+
+class_code = "FCEU"
+sec_code = "FCEU SI 20260615 PS"
+tick_size = 0.0001

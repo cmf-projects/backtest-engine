@@ -1,0 +1,19 @@
+# Stand-in engine/strategy (scripts/simple_strategy.py).
+# Must match venue listen host/ports in apps/backtest/config.toml.
+
+host = "127.0.0.1"
+feed_port = 9001
+order_port = 9002
+
+class_code = "FCEU"
+sec_code = "FCEU SI 20260615 PS"
+
+# Declared order latency Δ in HELLO.
+# 500_000_000 = 0.5 s
+lookahead_ns = 500_000_000
+# Hit best bid every 5 s of logical time on the short sample.
+interval_ns = 5_000_000_000
+qty = 1
+# 0 = DAY, 1 = IOC, 2 = FOK (protocol N.tif)
+tif = 0
+max_orders = 5
