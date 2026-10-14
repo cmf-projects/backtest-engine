@@ -6,7 +6,7 @@ feed (book) and orders.
 
 Protocol / assignment text: [`docs/TASK.md`](docs/TASK.md).  
 Domain terms and layout: [`docs/CONTEXT.md`](docs/CONTEXT.md).  
-Starter reference: [`examples/example_venue.cc`](examples/example_venue.cc), PDF in [`files/`](files/).
+Protocol PDF: [`files/`](files/).
 
 ## Requirements
 
@@ -78,7 +78,6 @@ src/config/        TOML loader
 scripts/           mbo_to_snapshots.py, simple_strategy.py, strategy.toml
 docs/              TASK, CONTEXT
 data/converted/    sample JSONL (gitignored)
-examples/          upstream starter example_venue.cc
 files/             protocol PDF
 ```
 
