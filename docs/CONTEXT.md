@@ -79,8 +79,12 @@ src/config/           TOML load (private)
 src/venue/            venue logic (private)
 apps/backtest/        entrypoint + venue `config.toml` → binary `backtest`
 scripts/              offline converters + strategy stand-in (`strategy.toml`)
-docs/                 TASK, CONTEXT
+docs/                 TASK, CONTEXT, POPULATION_PLAN, GLOSSARY
 ```
+
+Population / multi-strategy target architecture: [`POPULATION_PLAN.md`](POPULATION_PLAN.md)
+(terms: [`GLOSSARY.md`](GLOSSARY.md)).
+
 
 ## Work sequence (agreed)
 
