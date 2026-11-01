@@ -5,6 +5,7 @@
 #   make strategy       run Python strategy only (venue must already listen)
 #   make run            venue in background, then strategy
 #   make clean
+#   make protos         generate C++ from protos/*.proto -> protos/gen/
 
 BUILD_DIR        ?= build
 BACKTEST         := $(BUILD_DIR)/backtest
@@ -13,7 +14,7 @@ STRATEGY_CONFIG  ?= scripts/strategy.toml
 STRATEGY         := python3 scripts/simple_strategy.py --config $(STRATEGY_CONFIG)
 CMAKE_FLAGS      ?= -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
-.PHONY: all build cmake venue strategy run clean help
+.PHONY: all build cmake venue strategy run clean help protos
 
 all: build
 
@@ -23,7 +24,11 @@ help:
 	@echo "  make venue      - run C++ backtest (CONFIG=$(VENUE_CONFIG))"
 	@echo "  make strategy   - run Python strategy (--config $(STRATEGY_CONFIG))"
 	@echo "  make run        - start venue, then strategy, wait for both"
+	@echo "  make protos     - generate C++ stubs into protos/gen/"
 	@echo "  make clean      - remove $(BUILD_DIR)"
+
+protos:
+	./protos/generate.sh
 
 cmake: $(BUILD_DIR)/CMakeCache.txt
 

@@ -77,37 +77,41 @@ message Advance {}
 message End {}
 
 // ---------------------------------------------------------------------------
-// Tick = shared books (per component_id) + per-slot overlays/trades
+// Tick = optional shared keyframe (first tick) + per-slot book patches/trades
 // ---------------------------------------------------------------------------
 
 message Tick {
   uint64 pop_ts_ns = 1;
-  // One entry per component that has a shared-book update this tick.
-  // Shared across slots — not copied into each SlotTick.
+  // Shared full books — typically only the first tick (all strategies seed
+  // from this). Later resyncs are per-slot in SlotBookUpdate, not here.
   repeated SharedBookUpdate books = 2;
   repeated SlotTick slots = 3;
 }
 
 message SharedBookUpdate {
   string component_id = 1;       // matches Open.components[].component_id
+  // First-tick seed is always a keyframe. Diff on this path is unused.
   oneof update {
-    BookSnapshot keyframe = 2;   // full L2 (first tick / resync for this leg)
-    BookDiff diff = 3;           // levels changed vs previous shared book
+    BookSnapshot keyframe = 2;
+    BookDiff diff = 3;           // reserved / unused in current cadence
   }
 }
 
 message SlotTick {
   uint32 slot_id = 1;
-  // Per-component overlays where effective ≠ shared (resting + impact).
-  // Empty list / empty diff ⇒ identical to shared for that component_id.
-  repeated SlotBookOverlay overlays = 2;
-  repeated Trade trades = 3;     // due-match fills on this pop_ts
+  // Per-component patches after the shared seed: Diff normally, Keyframe when
+  // the slot's book is cheaper to rebuild (large change) or the strategy
+  // asked for a resync after dropping its local book.
+  repeated SlotBookUpdate books = 2;
+  repeated Trade trades = 3;
 }
 
-message SlotBookOverlay {
+message SlotBookUpdate {
   string component_id = 1;
-  // Absolute qty; 0 = remove level.
-  BookDiff overlay = 2;
+  oneof update {
+    BookSnapshot keyframe = 2;   // full L2 for this slot only
+    BookDiff diff = 3;           // absolute qty; 0 = remove level
+  }
 }
 
 message BookSnapshot {
@@ -203,12 +207,20 @@ message Error {
 // Stream envelopes (used by rpc.proto)
 // ---------------------------------------------------------------------------
 
+// Strategy dropped its local book for a component (or all if component_id empty)
+// and needs a per-slot keyframe on a later Tick — not a global shared resync.
+message ResyncRequest {
+  uint32 slot_id = 1;
+  string component_id = 2;       // empty → all components for this slot
+}
+
 message ClientMessage {
   oneof payload {
     Open open = 1;           // must be first; fixes population for the run
     OrderBatch orders = 2;   // after Tick; may be empty
     Advance advance = 3;     // after orders; pull clock +1 step
     Close close = 4;         // graceful shutdown only (not config change)
+    ResyncRequest resync = 5;
   }
 }
 

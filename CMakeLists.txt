@@ -65,6 +65,29 @@ target_sources(cmf_driver INTERFACE
 # ---------------------------------------------------------------------------
 # Venue library (private sources) — src/
 # ---------------------------------------------------------------------------
+add_library(dataset_lib
+  src/dataset/jsonl_tape.cc)
+add_library(cmf::dataset ALIAS dataset_lib)
+
+target_include_directories(dataset_lib
+  PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>")
+target_compile_features(dataset_lib PUBLIC cxx_std_20)
+
+add_library(population_lib
+  src/population/clock.cc
+  src/population/file_book.cc
+  src/population/book_diff.cc
+  src/population/slot.cc
+  src/population/population.cc)
+add_library(cmf::population ALIAS population_lib)
+
+target_include_directories(population_lib
+  PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>")
+target_compile_features(population_lib PUBLIC cxx_std_20)
+# dataset_lib adapts into population::Tape (headers only); link both at the app.
+
 add_library(venue_lib
   src/config/config.cc
   src/venue/venue.cc)
@@ -77,6 +100,9 @@ target_include_directories(venue_lib
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>")
 target_link_libraries(venue_lib PUBLIC cmf::driver PRIVATE tomlplusplus::tomlplusplus)
 
+# Population path is separate from CMF venue for now; link when the gRPC app arrives.
+# target_link_libraries(venue_lib PUBLIC cmf::population)
+
 # ---------------------------------------------------------------------------
 # App entrypoint — apps/backtest → binary name `backtest` (engine looks for it)
 # ---------------------------------------------------------------------------
@@ -84,9 +110,13 @@ add_executable(backtest apps/backtest/main.cc)
 target_link_libraries(backtest PRIVATE cmf::venue)
 
 if(MSVC)
+  target_compile_options(dataset_lib PRIVATE /W4)
+  target_compile_options(population_lib PRIVATE /W4)
   target_compile_options(venue_lib PRIVATE /W4)
   target_compile_options(backtest PRIVATE /W4)
 else()
+  target_compile_options(dataset_lib PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(population_lib PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(venue_lib PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(backtest PRIVATE -Wall -Wextra -Wpedantic)
 endif()

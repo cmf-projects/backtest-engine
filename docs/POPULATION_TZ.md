@@ -149,8 +149,12 @@ Working и ImpactState в venue. На wire:
 - **`Open.components`**: 1…N ног; у каждой уникальный **`component_id`**,
   `role` (SPOT/FUTURE/OPTION — класс, не ключ), JSONL + class/sec/tick.
   Несколько future/option — несколько Component с разными id.
-- **`Tick.books` / overlays / Order / Trade** ключятся по **`component_id`**.
-- Один `Δ` на слот, не на инструмент.
+- **`Tick.books`**: общий keyframe **только на первом тике** (все стратегии
+  сидят с одного seed).
+- Дальше `Tick.books` пустой; патчи → **`SlotTick.books`** (Diff обычный;
+  Keyframe только этому слоту, если diff дорогой **или** стратегия сбросила
+  локальный стакан и прислала `ResyncRequest`).
+- Order/Trade с `component_id`. Один `Δ` на слот.
 
 P0 может открыть bundle из **одного** компонента.
 
@@ -268,7 +272,7 @@ View = effective на `t - md_lag`. Нужен ли **исторический**
 - Разный старт файлов: роли без данных ещё не появляются в `Tick.books`
   / пустой view этой роли, пока не придёт первое событие (не ждём
   искусственного align всех трёх).
-- На wire: один `Tick`, внутри `books[]` / overlays **по ролям**.
+- На wire: один `Tick`, внутри `books[]` / overlays **по `component_id`**.
 
 ### 8.6 Индекс и старт
 
