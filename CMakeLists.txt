@@ -77,6 +77,7 @@ target_compile_features(dataset_lib PUBLIC cxx_std_20)
 add_library(population_lib
   src/population/clock.cc
   src/population/file_book.cc
+  src/population/tape_window.cc
   src/population/book_diff.cc
   src/population/slot.cc
   src/population/population.cc)
@@ -109,14 +110,48 @@ target_link_libraries(venue_lib PUBLIC cmf::driver PRIVATE tomlplusplus::tomlplu
 add_executable(backtest apps/backtest/main.cc)
 target_link_libraries(backtest PRIVATE cmf::venue)
 
+# ---------------------------------------------------------------------------
+# Tests (GoogleTest) — population smoke / unit
+# ---------------------------------------------------------------------------
+option(CMF_BUILD_TESTS "Build unit tests" ON)
+
+if(CMF_BUILD_TESTS)
+  set(CMF_GTEST_TAG "v1.15.2" CACHE STRING "GoogleTest git tag")
+  FetchContent_Declare(googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG        ${CMF_GTEST_TAG}
+    GIT_SHALLOW    TRUE)
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(googletest)
+
+  enable_testing()
+  include(GoogleTest)
+
+  add_executable(population_tests
+    tests/population/population_tick_test.cc
+    tests/population/tape_window_test.cc)
+  target_include_directories(population_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/population")
+  target_link_libraries(population_tests PRIVATE
+    cmf::population
+    GTest::gtest_main)
+  gtest_discover_tests(population_tests)
+endif()
+
 if(MSVC)
   target_compile_options(dataset_lib PRIVATE /W4)
   target_compile_options(population_lib PRIVATE /W4)
   target_compile_options(venue_lib PRIVATE /W4)
   target_compile_options(backtest PRIVATE /W4)
+  if(CMF_BUILD_TESTS)
+    target_compile_options(population_tests PRIVATE /W4)
+  endif()
 else()
   target_compile_options(dataset_lib PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(population_lib PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(venue_lib PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(backtest PRIVATE -Wall -Wextra -Wpedantic)
+  if(CMF_BUILD_TESTS)
+    target_compile_options(population_tests PRIVATE -Wall -Wextra -Wpedantic)
+  endif()
 endif()

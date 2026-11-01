@@ -99,9 +99,8 @@ message SharedBookUpdate {
 
 message SlotTick {
   uint32 slot_id = 1;
-  // Per-component patches after the shared seed: Diff normally, Keyframe when
-  // the slot's book is cheaper to rebuild (large change) or the strategy
-  // asked for a resync after dropping its local book.
+  // Per-component patches after the shared seed: Diff normally; Keyframe only
+  // when the strategy asked for a resync after dropping its local book.
   repeated SlotBookUpdate books = 2;
   repeated Trade trades = 3;
 }

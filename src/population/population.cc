@@ -76,8 +76,8 @@ TickView Population::MakeTick() {
     }
 
     // After the seed: tick.books stays empty; patches are per-slot only.
-    // PreferKeyframe → full file Keyframe; risk if PS merges resting into local
-    // book instead of overlay — see docs/BUG_KEYFRAME_OVERLAY.md.
+    // Mid-run: Diff only. Keyframe only on QueueResync (explicit rebuild).
+    // books = file book; resting/impact stay a separate overlay on the PS side.
     const BookDiffResult diff =
         DiffBooks(last_sent_bids_, last_sent_asks_, book_.bids(), book_.asks(), tick_size_);
 

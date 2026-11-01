@@ -13,7 +13,7 @@ namespace population {
 // Cadence:
 // - Tick 1: `books` = shared Keyframe for everyone; slot books empty.
 // - Later: `books` empty; each SlotTickView gets Diff patches (or Keyframe
-//   if that slot needs a rebuild — large change or ResyncRequest).
+//   only after QueueResync / ResyncRequest).
 
 enum class BookPatchKind {
     Keyframe,

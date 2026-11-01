@@ -21,6 +21,7 @@ void FileBook::Start(Clock& clock) {
     }
     clock.Start(first->ts_ns);
     current_ = std::move(*first);
+    window_.Append(*current_);
     started_ = true;
 }
 
@@ -38,6 +39,7 @@ bool FileBook::Advance(Clock& clock) {
     }
     clock.AdvanceTo(next->ts_ns);
     current_ = std::move(*next);
+    window_.Append(*current_);
     return true;
 }
 

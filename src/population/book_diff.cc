@@ -1,7 +1,6 @@
 #include "population/book_diff.hpp"
 
 #include <cmath>
-#include <cstdint>
 #include <map>
 #include <stdexcept>
 

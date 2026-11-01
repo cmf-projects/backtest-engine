@@ -34,6 +34,7 @@ public:
     [[nodiscard]] bool started() const noexcept { return started_; }
     [[nodiscard]] bool ended() const noexcept { return book_.ended(); }
     [[nodiscard]] const Clock& clock() const noexcept { return clock_; }
+    [[nodiscard]] const FileBook& book() const noexcept { return book_; }
     [[nodiscard]] const std::vector<SlotConfig>& slots() const noexcept { return slots_; }
     [[nodiscard]] const std::string& component_id() const noexcept { return component_id_; }
 
