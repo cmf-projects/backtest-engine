@@ -3,6 +3,7 @@
 #include "population/book_diff.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 #include <utility>
 
@@ -23,11 +24,51 @@ Population::Population(std::string component_id, double tick_size, TapePtr tape,
     ValidateSlots(slots_);
     for (const SlotConfig& cfg : slots_) {
         slot_send_.emplace(cfg.slot_id, SlotSendState{});
+        slot_orders_.emplace(cfg.slot_id, SlotOrders{});
+        slot_impact_.emplace(cfg.slot_id, ImpactState{cfg.impact_lambda});
+        pending_trades_.emplace(cfg.slot_id, std::vector<Trade>{});
     }
 }
 
 bool Population::HasSlot(std::uint32_t slot_id) const {
     return slot_send_.find(slot_id) != slot_send_.end();
+}
+
+const SlotConfig* Population::FindSlot(std::uint32_t slot_id) const {
+    for (const SlotConfig& cfg : slots_) {
+        if (cfg.slot_id == slot_id) {
+            return &cfg;
+        }
+    }
+    return nullptr;
+}
+
+const SlotOrders* Population::SlotBook(std::uint32_t slot_id) const {
+    const auto it = slot_orders_.find(slot_id);
+    if (it == slot_orders_.end()) {
+        return nullptr;
+    }
+    return &it->second;
+}
+
+const ImpactState* Population::SlotImpact(std::uint32_t slot_id) const {
+    const auto it = slot_impact_.find(slot_id);
+    if (it == slot_impact_.end()) {
+        return nullptr;
+    }
+    return &it->second;
+}
+
+long long Population::ToTicks(double price) const {
+    return static_cast<long long>(std::llround(price / tick_size_));
+}
+
+bool Population::OnGrid(double price) const {
+    if (!(price > 0.0) || !std::isfinite(price)) {
+        return false;
+    }
+    const double on_grid = static_cast<double>(ToTicks(price)) * tick_size_;
+    return std::abs(price - on_grid) < tick_size_ / 1024.0;
 }
 
 void Population::Start() {
@@ -65,6 +106,12 @@ SnapshotEvent Population::ViewSnap(const SlotConfig& cfg) const {
     return *floor;
 }
 
+SnapshotEvent Population::EffectiveView(const SlotConfig& cfg) const {
+    SnapshotEvent view = ViewSnap(cfg);
+    slot_impact_.at(cfg.slot_id).ApplyTo(view.bids, view.asks, tick_size_);
+    return view;
+}
+
 void Population::TrimWindowForLags() {
     if (book_.window().empty() || slots_.empty()) {
         return;
@@ -83,10 +130,33 @@ void Population::TrimWindowForLags() {
     }
 }
 
+void Population::MatchDueIfNeeded() {
+    const std::uint64_t pop = clock_.pop_ts_ns();
+    if (matched_this_pop_ && last_match_pop_ts_ns_ == pop) {
+        return;
+    }
+
+    for (const SlotConfig& cfg : slots_) {
+        std::vector<Level> bids = book_.bids();
+        std::vector<Level> asks = book_.asks();
+        ImpactState& impact = slot_impact_.at(cfg.slot_id);
+        impact.Recover(book_.bids(), book_.asks(), pop, tick_size_);
+        impact.ApplyTo(bids, asks, tick_size_);
+        pending_trades_[cfg.slot_id] =
+            slot_orders_.at(cfg.slot_id).MatchDue(pop, std::move(bids), std::move(asks),
+                                                  tick_size_, &impact);
+    }
+
+    last_match_pop_ts_ns_ = pop;
+    matched_this_pop_ = true;
+}
+
 TickView Population::MakeTick() {
     if (!started_) {
         throw std::logic_error("population: MakeTick before Start");
     }
+
+    MatchDueIfNeeded();
 
     TickView tick;
     tick.pop_ts_ns = clock_.pop_ts_ns();
@@ -96,8 +166,10 @@ TickView Population::MakeTick() {
     for (const SlotConfig& cfg : slots_) {
         SlotTickView slot_tick;
         slot_tick.slot_id = cfg.slot_id;
+        slot_tick.trades = std::move(pending_trades_[cfg.slot_id]);
+        pending_trades_[cfg.slot_id].clear();
 
-        const SnapshotEvent view = ViewSnap(cfg);
+        const SnapshotEvent view = EffectiveView(cfg);
         SlotSendState& sent = slot_send_.at(cfg.slot_id);
         const bool slot_resync = resync_slots_.erase(cfg.slot_id) > 0;
         const bool need_keyframe = !sent.has_sent || slot_resync;
@@ -138,7 +210,64 @@ bool Population::Advance() {
     if (!started_) {
         throw std::logic_error("population: Advance before Start");
     }
-    return book_.Advance(clock_);
+    const bool ok = book_.Advance(clock_);
+    if (ok) {
+        matched_this_pop_ = false;
+    }
+    return ok;
+}
+
+OrderResult Population::SubmitOne(const NewOrder& order) {
+    if (!started_) {
+        return OrderResult::NotStarted;
+    }
+    const SlotConfig* cfg = FindSlot(order.slot_id);
+    if (cfg == nullptr) {
+        return OrderResult::UnknownSlot;
+    }
+    if (order.component_id != component_id_) {
+        return OrderResult::UnknownComponent;
+    }
+    if (order.qty == 0) {
+        return OrderResult::InvalidQty;
+    }
+    if (!OnGrid(order.price)) {
+        return OrderResult::PriceOffGrid;
+    }
+
+    WorkingOrder working;
+    working.client_order_id = order.client_order_id;
+    working.component_id = order.component_id;
+    working.side = order.side;
+    working.price_ticks = ToTicks(order.price);
+    working.leaves = order.qty;
+    working.tif = order.tif;
+    working.effective_ts_ns = clock_.pop_ts_ns() + cfg->delta_ns;
+
+    return slot_orders_.at(order.slot_id).Accept(std::move(working));
+}
+
+OrderResult Population::CancelOne(const CancelOrder& cancel) {
+    if (!started_) {
+        return OrderResult::NotStarted;
+    }
+    if (!HasSlot(cancel.slot_id)) {
+        return OrderResult::UnknownSlot;
+    }
+    return slot_orders_.at(cancel.slot_id).Cancel(cancel.client_order_id);
+}
+
+OrderBatchResult Population::Submit(const OrderBatch& batch) {
+    OrderBatchResult result;
+    result.order_results.reserve(batch.orders.size());
+    result.cancel_results.reserve(batch.cancels.size());
+    for (const NewOrder& order : batch.orders) {
+        result.order_results.push_back(SubmitOne(order));
+    }
+    for (const CancelOrder& cancel : batch.cancels) {
+        result.cancel_results.push_back(CancelOne(cancel));
+    }
+    return result;
 }
 
 }  // namespace population

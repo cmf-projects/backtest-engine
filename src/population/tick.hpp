@@ -1,5 +1,6 @@
 #pragma once
 
+#include "population/order.hpp"
 #include "population/types.hpp"
 
 #include <cstdint>
@@ -38,7 +39,7 @@ struct SlotBookUpdateView {
 struct SlotTickView {
     std::uint32_t slot_id = 0;
     std::vector<SlotBookUpdateView> books;
-    // trades: chunk 5
+    std::vector<Trade> trades;  // fills/cancels from due match at this pop_ts
 };
 
 struct TickView {

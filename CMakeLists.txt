@@ -80,6 +80,9 @@ add_library(population_lib
   src/population/tape_window.cc
   src/population/book_diff.cc
   src/population/slot.cc
+  src/population/slot_orders.cc
+  src/population/match.cc
+  src/population/impact.cc
   src/population/population.cc)
 add_library(cmf::population ALIAS population_lib)
 
@@ -129,7 +132,10 @@ if(CMF_BUILD_TESTS)
 
   add_executable(population_tests
     tests/population/population_tick_test.cc
-    tests/population/tape_window_test.cc)
+    tests/population/tape_window_test.cc
+    tests/population/order_submit_test.cc
+    tests/population/match_test.cc
+    tests/population/impact_test.cc)
   target_include_directories(population_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/population")
   target_link_libraries(population_tests PRIVATE
