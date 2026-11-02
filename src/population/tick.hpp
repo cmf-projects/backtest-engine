@@ -11,9 +11,9 @@ namespace population {
 // In-memory Tick (mirrors protos/messages.proto).
 //
 // Cadence:
-// - Tick 1: `books` = shared Keyframe for everyone; slot books empty.
-// - Later: `books` empty; each SlotTickView gets Diff patches (or Keyframe
-//   only after QueueResync / ResyncRequest).
+// - `Tick.books` (shared) unused in P0 with per-slot md_lag.
+// - Each slot: Keyframe on first send / Resync; else Diff of file view at
+//   pop_ts - md_lag vs that slot's last sent book.
 
 enum class BookPatchKind {
     Keyframe,

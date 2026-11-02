@@ -71,9 +71,10 @@ TEST(FileBook, AppendsHistoryOnAdvance) {
     EXPECT_EQ(pop.book().window().size(), 3u);
     EXPECT_EQ(pop.book().window().AtOrBefore(200)->bids[0].qty, 8u);
 
-    // MakeTick still uses current head (md_lag not wired yet).
     const auto tick = pop.MakeTick();
     EXPECT_EQ(tick.pop_ts_ns, 300u);
-    ASSERT_FALSE(tick.books.empty());
-    EXPECT_EQ(tick.books[0].bids[0].qty, 6u);
+    ASSERT_EQ(tick.slots.size(), 1u);
+    ASSERT_EQ(tick.slots[0].books.size(), 1u);
+    EXPECT_EQ(tick.slots[0].books[0].kind, population::BookPatchKind::Keyframe);
+    EXPECT_EQ(tick.slots[0].books[0].bids[0].qty, 6u);
 }

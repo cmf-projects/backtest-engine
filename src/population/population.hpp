@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -25,8 +26,9 @@ public:
     // Strategy dropped its local book → next MakeTick sends Keyframe to this slot only.
     void QueueResync(std::uint32_t slot_id);
 
-    // 1st tick: shared Keyframe in tick.books.
-    // Later: per-slot Diff, or per-slot Keyframe (QueueResync).
+    // Per-slot file view at pop_ts - md_lag (clamped to SnapshotFloor while warming up).
+    // First send / Resync → Keyframe; else Diff vs that slot's last sent book.
+    // tick.books (shared) stays empty — lags differ per slot.
     [[nodiscard]] TickView MakeTick();
 
     [[nodiscard]] bool Advance();
@@ -39,7 +41,15 @@ public:
     [[nodiscard]] const std::string& component_id() const noexcept { return component_id_; }
 
 private:
+    struct SlotSendState {
+        bool has_sent = false;
+        std::vector<Level> last_bids;
+        std::vector<Level> last_asks;
+    };
+
     [[nodiscard]] bool HasSlot(std::uint32_t slot_id) const;
+    [[nodiscard]] SnapshotEvent ViewSnap(const SlotConfig& cfg) const;
+    void TrimWindowForLags();
 
     std::string component_id_;
     double tick_size_ = 0.0;
@@ -47,9 +57,7 @@ private:
     Clock clock_;
     FileBook book_;
     bool started_ = false;
-    bool sent_initial_keyframe_ = false;
-    std::vector<Level> last_sent_bids_;
-    std::vector<Level> last_sent_asks_;
+    std::unordered_map<std::uint32_t, SlotSendState> slot_send_;
     std::unordered_set<std::uint32_t> resync_slots_;
 };
 

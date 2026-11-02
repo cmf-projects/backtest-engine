@@ -21,11 +21,13 @@ Population::Population(std::string component_id, double tick_size, TapePtr tape,
         throw std::invalid_argument("population: tick_size must be > 0");
     }
     ValidateSlots(slots_);
+    for (const SlotConfig& cfg : slots_) {
+        slot_send_.emplace(cfg.slot_id, SlotSendState{});
+    }
 }
 
 bool Population::HasSlot(std::uint32_t slot_id) const {
-    return std::any_of(slots_.begin(), slots_.end(),
-                       [slot_id](const SlotConfig& s) { return s.slot_id == slot_id; });
+    return slot_send_.find(slot_id) != slot_send_.end();
 }
 
 void Population::Start() {
@@ -44,6 +46,43 @@ void Population::QueueResync(std::uint32_t slot_id) {
     resync_slots_.insert(slot_id);
 }
 
+SnapshotEvent Population::ViewSnap(const SlotConfig& cfg) const {
+    const std::uint64_t pop = clock_.pop_ts_ns();
+    const std::uint64_t view_ts =
+        (cfg.md_lag_ns >= pop) ? 0 : (pop - cfg.md_lag_ns);
+
+    if (auto snap = book_.window().AtOrBefore(view_ts)) {
+        return *snap;
+    }
+    // Warm-up: lag reaches before SnapshotFloor → clamp to oldest kept snap.
+    if (book_.window().empty()) {
+        throw std::logic_error("population: ViewSnap on empty TapeWindow");
+    }
+    auto floor = book_.window().AtOrBefore(book_.window().floor_ts_ns());
+    if (!floor) {
+        throw std::logic_error("population: TapeWindow floor missing");
+    }
+    return *floor;
+}
+
+void Population::TrimWindowForLags() {
+    if (book_.window().empty() || slots_.empty()) {
+        return;
+    }
+    std::uint64_t max_lag = 0;
+    for (const SlotConfig& cfg : slots_) {
+        max_lag = std::max(max_lag, cfg.md_lag_ns);
+    }
+    const std::uint64_t pop = clock_.pop_ts_ns();
+    // Warm-up (max_lag >= pop → view_ts under floor): nothing to drop yet.
+    if (max_lag >= pop) {
+        return;
+    }
+    if (auto cover = book_.window().AtOrBefore(pop - max_lag)) {
+        book_.window().TrimBefore(cover->ts_ns);
+    }
+}
+
 TickView Population::MakeTick() {
     if (!started_) {
         throw std::logic_error("population: MakeTick before Start");
@@ -52,64 +91,46 @@ TickView Population::MakeTick() {
     TickView tick;
     tick.pop_ts_ns = clock_.pop_ts_ns();
     tick.slots.reserve(slots_.size());
-
-    if (!sent_initial_keyframe_) {
-        // Shared seed for all strategies once.
-        SharedBookView shared;
-        shared.component_id = component_id_;
-        shared.kind = BookPatchKind::Keyframe;
-        shared.bids = book_.bids();
-        shared.asks = book_.asks();
-        tick.books.push_back(std::move(shared));
-
-        for (const SlotConfig& cfg : slots_) {
-            SlotTickView slot_tick;
-            slot_tick.slot_id = cfg.slot_id;
-            tick.slots.push_back(std::move(slot_tick));
-        }
-
-        last_sent_bids_ = book_.bids();
-        last_sent_asks_ = book_.asks();
-        sent_initial_keyframe_ = true;
-        resync_slots_.clear();
-        return tick;
-    }
-
-    // After the seed: tick.books stays empty; patches are per-slot only.
-    // Mid-run: Diff only. Keyframe only on QueueResync (explicit rebuild).
-    // books = file book; resting/impact stay a separate overlay on the PS side.
-    const BookDiffResult diff =
-        DiffBooks(last_sent_bids_, last_sent_asks_, book_.bids(), book_.asks(), tick_size_);
+    // Shared tick.books unused when md_lag may differ per slot.
 
     for (const SlotConfig& cfg : slots_) {
         SlotTickView slot_tick;
         slot_tick.slot_id = cfg.slot_id;
 
+        const SnapshotEvent view = ViewSnap(cfg);
+        SlotSendState& sent = slot_send_.at(cfg.slot_id);
         const bool slot_resync = resync_slots_.erase(cfg.slot_id) > 0;
+        const bool need_keyframe = !sent.has_sent || slot_resync;
 
-        if (slot_resync) {
+        if (need_keyframe) {
             SlotBookUpdateView patch;
             patch.component_id = component_id_;
             patch.kind = BookPatchKind::Keyframe;
-            patch.bids = book_.bids();
-            patch.asks = book_.asks();
+            patch.bids = view.bids;
+            patch.asks = view.asks;
             slot_tick.books.push_back(std::move(patch));
-        } else if (!diff.empty()) {
-            SlotBookUpdateView patch;
-            patch.component_id = component_id_;
-            patch.kind = BookPatchKind::Diff;
-            patch.bids = diff.bids;
-            patch.asks = diff.asks;
-            slot_tick.books.push_back(std::move(patch));
+            sent.last_bids = view.bids;
+            sent.last_asks = view.asks;
+            sent.has_sent = true;
+        } else {
+            const BookDiffResult diff =
+                DiffBooks(sent.last_bids, sent.last_asks, view.bids, view.asks, tick_size_);
+            if (!diff.empty()) {
+                SlotBookUpdateView patch;
+                patch.component_id = component_id_;
+                patch.kind = BookPatchKind::Diff;
+                patch.bids = diff.bids;
+                patch.asks = diff.asks;
+                slot_tick.books.push_back(std::move(patch));
+                sent.last_bids = view.bids;
+                sent.last_asks = view.asks;
+            }
         }
 
         tick.slots.push_back(std::move(slot_tick));
     }
 
-    if (!diff.empty()) {
-        last_sent_bids_ = book_.bids();
-        last_sent_asks_ = book_.asks();
-    }
+    TrimWindowForLags();
     return tick;
 }
 
