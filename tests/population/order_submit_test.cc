@@ -117,4 +117,23 @@ TEST(OrderSubmit, RejectsBadComponentQtyGridSlot) {
     EXPECT_EQ(result.order_results[1], OrderResult::PriceOffGrid);
     EXPECT_EQ(result.order_results[2], OrderResult::UnknownComponent);
     EXPECT_EQ(result.order_results[3], OrderResult::UnknownSlot);
+    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 0u);  // all-or-nothing: nothing applied
+}
+
+TEST(OrderSubmit, MixedBatchAppliesNothingOnOneBadLine) {
+    Population pop = MakePop();
+    pop.Start();
+
+    OrderBatch batch;
+    batch.orders.push_back(Buy(1, 100.0, 2));
+    batch.orders.push_back(Buy(2, 100.0, 0));  // bad qty
+    const auto result = pop.Submit(batch);
+    EXPECT_EQ(result.order_results[0], OrderResult::Ok);
+    EXPECT_EQ(result.order_results[1], OrderResult::InvalidQty);
+    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 0u);
+
+    const auto failures = result.Failures(batch);
+    ASSERT_EQ(failures.size(), 1u);
+    EXPECT_EQ(failures[0].client_order_id, 2u);
+    EXPECT_EQ(failures[0].code, OrderResult::InvalidQty);
 }

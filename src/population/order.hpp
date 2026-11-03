@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -83,10 +84,50 @@ struct OrderBatch {
     std::vector<CancelOrder> cancels;
 };
 
-// Parallel to batch: one reject code per order, then per cancel.
+// One failed Order/Cancel line — maps to proto `Error` in OrdersAck.errors[].
+struct OrderLineFailure {
+    std::uint32_t slot_id = 0;
+    std::uint64_t client_order_id = 0;
+    OrderResult code = OrderResult::Unknown;
+};
+
+// Per-line codes from Submit validation. On the wire → OrdersAck:
+//   no failures → status=OK, errors empty
+//   else        → status=ERROR, errors[] = Failures(batch); batch not applied.
 struct OrderBatchResult {
     std::vector<OrderResult> order_results;
     std::vector<OrderResult> cancel_results;
+
+    // Correlates parallel result vectors with the submitted batch.
+    [[nodiscard]] std::vector<OrderLineFailure> Failures(
+        const OrderBatch& batch) const {
+        std::vector<OrderLineFailure> out;
+        const std::size_t n_orders =
+            std::min(order_results.size(), batch.orders.size());
+        for (std::size_t i = 0; i < n_orders; ++i) {
+            if (order_results[i] == OrderResult::Ok) {
+                continue;
+            }
+            OrderLineFailure f;
+            f.slot_id = batch.orders[i].slot_id;
+            f.client_order_id = batch.orders[i].client_order_id;
+            f.code = order_results[i];
+            out.push_back(f);
+        }
+        const std::size_t n_cancels =
+            std::min(cancel_results.size(), batch.cancels.size());
+        for (std::size_t i = 0; i < n_cancels; ++i) {
+            if (cancel_results[i] == OrderResult::Ok) {
+                continue;
+            }
+            OrderLineFailure f;
+            f.slot_id = batch.cancels[i].slot_id;
+            f.client_order_id = batch.cancels[i].client_order_id;
+            f.code = cancel_results[i];
+            out.push_back(f);
+        }
+        return out;
+    }
 };
 
 }  // namespace population

@@ -14,6 +14,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace population {
@@ -33,7 +34,8 @@ public:
     // trades. Shared tick.books unused.
     [[nodiscard]] TickView MakeTick();
 
-    // TZ §5.4 step 5: accept Order/Cancel only (effective_ts = pop_ts + Δ).
+    // Validate + accept into working (effective_ts = pop_ts + Δ). No match.
+    // Wire: no failures → OrdersAck ok; else OrdersAck.errors[] (no partial applies).
     [[nodiscard]] OrderBatchResult Submit(const OrderBatch& batch);
 
     [[nodiscard]] bool Advance();
@@ -55,6 +57,19 @@ private:
         std::vector<Level> last_asks;
     };
 
+    // Batch de-dupe key: (slot_id, client_order_id). Ids are unique per slot, not
+    // globally — same client_order_id on two slots is fine.
+    using OrderKey = std::pair<std::uint32_t, std::uint64_t>;
+
+    struct OrderKeyHash {
+        [[nodiscard]] std::size_t operator()(const OrderKey& key) const noexcept {
+            std::size_t h = std::hash<std::uint32_t>{}(key.first);
+            // boost::hash_combine(h, client_order_id)
+            h ^= std::hash<std::uint64_t>{}(key.second) + 0x9e3779b9u + (h << 6) + (h >> 2);
+            return h;
+        }
+    };
+
     [[nodiscard]] bool HasSlot(std::uint32_t slot_id) const;
     [[nodiscard]] const SlotConfig* FindSlot(std::uint32_t slot_id) const;
     [[nodiscard]] SnapshotEvent ViewSnap(const SlotConfig& cfg) const;
@@ -63,6 +78,7 @@ private:
     void MatchDueIfNeeded();
 
     [[nodiscard]] OrderResult ValidateNewOrder(const NewOrder& order) const;
+    [[nodiscard]] OrderResult ValidateCancel(const CancelOrder& cancel) const;
     [[nodiscard]] OrderResult SubmitOne(const NewOrder& order);
     [[nodiscard]] OrderResult CancelOne(const CancelOrder& cancel);
     [[nodiscard]] long long ToTicks(double price) const;

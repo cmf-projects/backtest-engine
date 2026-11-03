@@ -126,22 +126,67 @@ In-process callback API **пока не делаем** (только gRPC stream
 
 | Когда | Направление | Тип | Содержимое |
 | --- | --- | --- |
-| Старт (1×) | PS → Venue | `Open` (имя черновое) | `population_id`, слоты, dataset, … |
-| Каждый тик | Venue → PS | `Tick` | `pop_ts`; shared books **per role** + per-slot overlay/trades |
-| Каждый тик | PS → Venue | `Order` / `Cancel` | `slot_id`, `client_order_id`, …; Cancel = тот же id |
-| Каждый тик | PS → Venue | `Advance` | тик обработан, можно +1 |
-| Конец ленты | Venue → PS | `End` | датасет кончился |
-| Ошибка | Venue → PS | `Error` | валидация/протокол (`TIF`/`SIDE` UNSPECIFIED, `Δ=0`, …) |
-| Graceful stop | PS → Venue | `Close` | клиент завершает прогон досрочно; не больше чем shutdown |
+| Старт | PS → Venue | `Open` | конфиг популяции |
+| Старт | Venue → PS | **`OpenAck`** | всегда; `status` + при ERROR — `errors[]` |
+| Каждый тик | Venue → PS | `Tick` | books + trades; затем ждём клиента |
+| После Tick | PS → Venue | `OrderBatch` **или** `Advance` | другого не ждём |
+| Если OrderBatch | Venue → PS | **`OrdersAck`** | всегда; `status` + при ERROR — `errors[]` |
+| После ok Ack | PS → Venue | `Advance` | затем venue → следующий Tick \| End |
+| Конец ленты | Venue → PS | `End` | **без ack** — закрыть соединение |
+| Graceful stop | PS → Venue | `Close` | **без ack** в любом клиентском стейте |
+| Сбой stream | Venue → PS | `Error` (поле 3) | неверный стейт (см. ниже) |
 
-**`Error` может встраиваться между любыми сообщениями stream’а**, если
-предыдущее клиентское сообщение было некорректным (плохой Order/Open,
-UNSPECIFIED enum, …). Это не замена Tick/End: после ошибочного Order типично
-идёт `Error`, затем при валидном Advance цикл может продолжаться. Плохой
-`Open` обычно → `Error` и конец stream’а.
+**Почему Ack, а не bare Error:** после `Open` / `OrderBatch` клиент всегда ждёт
+один тип (`OpenAck` / `OrdersAck`). Сначала смотрит **`status`**:
+`ACK_STATUS_OK` → всё хорошо, `errors` пуст; `ACK_STATUS_ERROR` → смотреть
+`errors[]`.
 
-`TIF_UNSPECIFIED` / `SIDE_UNSPECIFIED` на Order → **`Error`** (`INVALID_TIF` /
-`INVALID_SIDE`), ордер не принимается.
+- **`OrdersAck` ERROR:** all-or-nothing, батч не применён; в `errors[]` —
+  каждая плохая строка (`slot_id`, `client_order_id`, `code`). Можно повторить
+  batch / `Close` на том же stream.
+- **`OpenAck` ERROR:** сломанный конфиг (слоты, Δ, components, …); в `errors[]`
+  все найденные проблемы; venue **закрывает соединение** (на этом stream Open
+  не чинят).
+
+Филлы — в `Tick.trades`.
+
+`End` / `Close` не подтверждаем — закрыть stream.
+
+#### State machine (venue, обязателен)
+
+Venue хранит фазу stream’а; неожиданное клиентское сообщение → **`Error` (поле 3)**
+и обычно конец stream.
+
+```text
+AwaitOpen
+  Open → OpenAck; if status=OK → send Tick → AwaitOrderOrAdvance
+         if status=ERROR → end stream (config broken)
+
+AwaitOrderOrAdvance          # только что ушёл Tick (или первый после Open)
+  OrderBatch → OrdersAck
+       status=OK    → AwaitAdvance
+       status=ERROR → остаёмся в AwaitOrderOrAdvance (retry batch / Close)
+  Advance  → apply; send Tick | End
+       Tick → AwaitOrderOrAdvance
+       End  → done (клиент закрывает)
+  Close    → hang up
+  иное (повторный Open, …) → Error #3
+
+AwaitAdvance                 # после ok OrdersAck
+  Advance  → apply; send Tick | End → (Tick → AwaitOrderOrAdvance | done)
+  Close    → hang up
+  OrderBatch / Open / … → Error #3
+
+Запрещено (примеры → Error #3):
+  Advance до первого Tick
+  Advance, пока ждём ответ на… (нет: Advance из AwaitOrderOrAdvance разрешён —
+    это «нет ордеров, двигай время»)
+  OrderBatch до Tick / во второй раз подряд без Advance после ok Ack
+```
+
+**Итого после Tick:** клиент шлёт либо `OrderBatch` (потом Ack и Advance),
+либо сразу `Advance` (пустой интерес к ордерам). `Advance` «в пустоту» до
+Tick — ошибка.
 
 Стратегия для маржи/оборота/PnL — по полю **trades**.
 Working и ImpactState в venue. На wire:
@@ -169,14 +214,13 @@ P0 может открыть bundle из **одного** компонента.
 
 ```text
 1. apply file delta на t                          # общая лента
-2. recovery impact по каждому слоту (P1; P0 no-op)
+2. recovery impact по каждому слоту
 3. match due по каждому слоту независимо
    (effective_ts ≤ t; resting в порядке отправки в слоте)
-4. Venue → PS одним Tick: shared_book + по слотам overlay/trades
-5. PS считает каждую стратегию → пачка Order/Cancel по слотам
-   Venue только принимает (effective_ts = t + Δ_i), без матча
-6. PS → Advance
-7. Advance: pop_ts → ts следующего (после tape_stride) события; SnapshotFloor
+4. Venue → PS Tick: books + trades
+5. PS → Venue OrderBatch (по view)
+6. PS → OrderBatch (опционально) → OrdersAck; и/или сразу Advance
+7. Advance: pop_ts → следующий event; SnapshotFloor; venue сам шлёт Tick|End
 ```
 
 **Изоляция:** слоты не видят чужие филлы/ордера и не конкурируют за

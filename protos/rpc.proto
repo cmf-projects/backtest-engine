@@ -1,5 +1,10 @@
 // Population gRPC service — docs/POPULATION_TZ.md §5.2, §8.10.
-// One bidi stream: Open → (Tick → Orders → Advance)* → End | Close.
+// One bidi stream (venue tracks phase — docs/POPULATION_TZ.md §5.3):
+//   Open → OpenAck → Tick →
+//     ( OrderBatch → OrdersAck → Advance | Advance ) → Tick | End → …
+// After Tick client may send OrderBatch or Advance only.
+// Advance before Tick / wrong phase → ServerMessage.error (#3).
+// Close / End: no ack; hang up.
 syntax = "proto3";
 
 package cmf.population.v1;

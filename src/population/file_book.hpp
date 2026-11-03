@@ -5,7 +5,6 @@
 #include "population/tape_window.hpp"
 #include "population/types.hpp"
 
-#include <memory>
 #include <optional>
 #include <vector>
 

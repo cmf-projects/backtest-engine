@@ -193,6 +193,12 @@ enum ErrorCode {
   ERROR_NO_SUCH_ORDER = 5;
   ERROR_INVALID_OPEN = 6;        // bad Open in general
   ERROR_INTERNAL = 7;            // venue bug / unexpected failure
+  ERROR_UNKNOWN_SLOT = 8;
+  ERROR_UNKNOWN_COMPONENT = 9;
+  ERROR_INVALID_QTY = 10;
+  ERROR_PRICE_OFF_GRID = 11;
+  ERROR_INVALID_CLIENT_ORDER_ID = 12;  // client_order_id == 0
+  ERROR_NOT_STARTED = 13;
 }
 
 message Error {
@@ -200,6 +206,31 @@ message Error {
   string message = 2;            // human-readable detail
   uint32 slot_id = 3;            // 0 if not order-scoped
   uint64 client_order_id = 4;    // 0 if not order-scoped
+}
+
+// Outcome of OpenAck / OrdersAck. Client checks status first; on ERROR read errors[].
+enum AckStatus {
+  ACK_STATUS_UNSPECIFIED = 0;  // invalid; treat as ERROR
+  ACK_STATUS_OK = 1;           // success; errors must be empty
+  ACK_STATUS_ERROR = 2;        // failure; see errors[]
+}
+
+// Venue → PS after Open. Always this type (do not wait for bare Error).
+// OK → population fixed, first Tick follows. ERROR → one or more config problems
+// in errors[] (bad slots, Δ=0, duplicate component_id, …); venue then ends the
+// stream (broken Open is not retryable on the same connection).
+message OpenAck {
+  AckStatus status = 1;
+  repeated Error errors = 2;
+}
+
+// Venue → PS after every OrderBatch (incl. empty). Always this type.
+// OK → batch applied, may Advance. ERROR → batch not applied (all-or-nothing);
+// errors[] lists each bad Order/Cancel line (slot_id + client_order_id + code).
+// Unlike OpenAck, client may retry OrderBatch or Close on the same stream.
+message OrdersAck {
+  AckStatus status = 1;
+  repeated Error errors = 2;
 }
 
 // ---------------------------------------------------------------------------
@@ -217,8 +248,8 @@ message ClientMessage {
   oneof payload {
     Open open = 1;           // must be first; fixes population for the run
     OrderBatch orders = 2;   // after Tick; may be empty
-    Advance advance = 3;     // after orders; pull clock +1 step
-    Close close = 4;         // graceful shutdown only (not config change)
+    Advance advance = 3;     // after OrdersAck (ok)
+    Close close = 4;         // graceful shutdown; no ack — just hang up
     ResyncRequest resync = 5;
   }
 }
@@ -226,11 +257,11 @@ message ClientMessage {
 message ServerMessage {
   oneof payload {
     Tick tick = 1;
-    End end = 2;             // tape finished (normal end)
-    // May appear between any other server messages when the previous client
-    // message was invalid (bad Order, bad Open, UNSPECIFIED enum, …).
-    // Does not by itself end the stream; client may Close or continue if
-    // the venue allows (Open failures typically imply stream teardown).
+    End end = 2;             // tape finished; no ack — client closes
+    // Unexpected stream fault only (e.g. Advance before Open). Not used for
+    // Open/OrderBatch validation — those always reply OpenAck / OrdersAck.
     Error error = 3;
+    OrdersAck orders_ack = 4;
+    OpenAck open_ack = 5;
   }
 }
