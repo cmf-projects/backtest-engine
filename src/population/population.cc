@@ -184,19 +184,18 @@ TickView Population::MakeTick() {
             sent.last_bids = view.bids;
             sent.last_asks = view.asks;
             sent.has_sent = true;
-        } else {
-            const BookDiffResult diff =
-                DiffBooks(sent.last_bids, sent.last_asks, view.bids, view.asks, tick_size_);
-            if (!diff.empty()) {
-                SlotBookUpdateView patch;
-                patch.component_id = component_id_;
-                patch.kind = BookPatchKind::Diff;
-                patch.bids = diff.bids;
-                patch.asks = diff.asks;
-                slot_tick.books.push_back(std::move(patch));
-                sent.last_bids = view.bids;
-                sent.last_asks = view.asks;
-            }
+        } else if (const BookDiffResult diff =
+                       DiffBooks(sent.last_bids, sent.last_asks, view.bids, view.asks, tick_size_);
+                   !diff.empty()) {
+            SlotBookUpdateView patch;
+            patch.component_id = component_id_;
+            patch.kind = BookPatchKind::Diff;
+            patch.bids = diff.bids;
+            patch.asks = diff.asks;
+            slot_tick.books.push_back(std::move(patch));
+
+            sent.last_bids = view.bids;
+            sent.last_asks = view.asks;
         }
 
         tick.slots.push_back(std::move(slot_tick));
@@ -217,12 +216,11 @@ bool Population::Advance() {
     return ok;
 }
 
-OrderResult Population::SubmitOne(const NewOrder& order) {
+OrderResult Population::ValidateNewOrder(const NewOrder& order) const {
     if (!started_) {
         return OrderResult::NotStarted;
     }
-    const SlotConfig* cfg = FindSlot(order.slot_id);
-    if (cfg == nullptr) {
+    if (!HasSlot(order.slot_id)) {
         return OrderResult::UnknownSlot;
     }
     if (order.component_id != component_id_) {
@@ -234,7 +232,25 @@ OrderResult Population::SubmitOne(const NewOrder& order) {
     if (!OnGrid(order.price)) {
         return OrderResult::PriceOffGrid;
     }
+    if (order.side == Side::Unknown) {
+        return OrderResult::InvalidSide;
+    }
+    if (order.tif == TimeInForce::Unknown) {
+        return OrderResult::InvalidTif;
+    }
+    if (order.client_order_id == 0) {
+        return OrderResult::InvalidClientOrderId;
+    }
+    return OrderResult::Ok;
+}
 
+OrderResult Population::SubmitOne(const NewOrder& order) {
+    const OrderResult check = ValidateNewOrder(order);
+    if (check != OrderResult::Ok) {
+        return check;
+    }
+
+    const SlotConfig* cfg = FindSlot(order.slot_id);
     WorkingOrder working;
     working.client_order_id = order.client_order_id;
     working.component_id = order.component_id;

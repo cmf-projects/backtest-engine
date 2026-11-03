@@ -11,6 +11,8 @@ inline constexpr std::size_t kMaxLevelsPerSide = 64;
 struct Level {
     double price = 0.0;
     std::uint64_t qty = 0;
+
+    [[nodiscard]] bool empty() const noexcept { return qty == 0; }
 };
 
 // One snapshot record from a component tape (file book, no impact/resting).

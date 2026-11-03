@@ -5,7 +5,6 @@
 
 #include <cstdint>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
 namespace population {
@@ -55,6 +54,8 @@ private:
         double eaten = 0.0;
         std::uint64_t t_last_ns = 0;
     };
+
+    void ApplySide(Side side, std::vector<Level>& levels, double tick_size) const;
 
     double lambda_ = 0.0;
     std::unordered_map<ImpactKey, LevelState, ImpactKeyHash> levels_;

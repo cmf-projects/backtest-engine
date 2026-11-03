@@ -62,6 +62,7 @@ private:
     void TrimWindowForLags();
     void MatchDueIfNeeded();
 
+    [[nodiscard]] OrderResult ValidateNewOrder(const NewOrder& order) const;
     [[nodiscard]] OrderResult SubmitOne(const NewOrder& order);
     [[nodiscard]] OrderResult CancelOne(const CancelOrder& cancel);
     [[nodiscard]] long long ToTicks(double price) const;

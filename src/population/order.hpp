@@ -30,6 +30,9 @@ enum class OrderResult {
     InvalidQty,
     PriceOffGrid,
     NotStarted,
+    InvalidSide,
+    InvalidTif,
+    InvalidClientOrderId,
 };
 
 struct NewOrder {

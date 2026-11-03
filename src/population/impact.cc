@@ -53,29 +53,28 @@ void ImpactState::Recover(const std::vector<Level>& file_bids, const std::vector
     }
 }
 
+void ImpactState::ApplySide(Side side, std::vector<Level>& levels, double tick_size) const {
+    for (Level& level : levels) {
+        const long long ticks = PriceToTicks(level.price, tick_size);
+        const auto it = levels_.find(ImpactKey{side, ticks});
+        if (it == levels_.end()) {
+            continue;
+        }
+        const double left = static_cast<double>(level.qty) - it->second.eaten;
+        level.qty = left > 0.0 ? static_cast<std::uint64_t>(left) : 0;
+    }
+    levels.erase(std::remove_if(levels.begin(), levels.end(),
+                                [](const Level& level) { return level.empty(); }),
+                 levels.end());
+}
+
 void ImpactState::ApplyTo(std::vector<Level>& bids, std::vector<Level>& asks,
                           double tick_size) const {
     if (!enabled() || levels_.empty()) {
         return;
     }
-
-    auto apply_side = [&](Side side, std::vector<Level>& levels) {
-        for (Level& level : levels) {
-            const long long ticks = PriceToTicks(level.price, tick_size);
-            const auto it = levels_.find(ImpactKey{side, ticks});
-            if (it == levels_.end()) {
-                continue;
-            }
-            const double left = static_cast<double>(level.qty) - it->second.eaten;
-            level.qty = left > 0.0 ? static_cast<std::uint64_t>(left) : 0;
-        }
-        levels.erase(std::remove_if(levels.begin(), levels.end(),
-                                    [](const Level& l) { return l.qty == 0; }),
-                     levels.end());
-    };
-
-    apply_side(Side::Buy, bids);
-    apply_side(Side::Sell, asks);
+    ApplySide(Side::Buy, bids, tick_size);
+    ApplySide(Side::Sell, asks, tick_size);
 }
 
 void ImpactState::OnFill(Side order_side, long long price_ticks, std::uint64_t qty,
