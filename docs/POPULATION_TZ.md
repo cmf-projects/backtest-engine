@@ -196,9 +196,8 @@ Working и ImpactState в venue. На wire:
   Несколько future/option — несколько Component с разными id.
 - **`Tick.books`**: общий keyframe **только на первом тике** (все стратегии
   сидят с одного seed).
-- Дальше `Tick.books` пустой; патчи → **`SlotTick.books`** (Diff обычный;
-  Keyframe только этому слоту, если diff дорогой **или** стратегия сбросила
-  локальный стакан и прислала `ResyncRequest`).
+- Дальше `Tick.books` пустой; патчи → **`SlotTick.books`**: Keyframe на первом
+  тике слота, дальше Diff. `ResyncRequest` нет — PS локальный book не сбрасывает.
 - Order/Trade с `component_id`. Один `Δ` на слот.
 
 P0 может открыть bundle из **одного** компонента.
@@ -218,9 +217,8 @@ P0 может открыть bundle из **одного** компонента.
 3. match due по каждому слоту независимо
    (effective_ts ≤ t; resting в порядке отправки в слоте)
 4. Venue → PS Tick: books + trades
-5. PS → Venue OrderBatch (по view)
-6. PS → OrderBatch (опционально) → OrdersAck; и/или сразу Advance
-7. Advance: pop_ts → следующий event; SnapshotFloor; venue сам шлёт Tick|End
+5. PS → Venue: либо OrderBatch → OrdersAck → Advance, либо сразу Advance
+6. Advance: pop_ts → следующий event; SnapshotFloor; venue сам шлёт Tick|End
 ```
 
 **Изоляция:** слоты не видят чужие филлы/ордера и не конкурируют за

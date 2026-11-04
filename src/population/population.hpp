@@ -13,7 +13,6 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -26,9 +25,6 @@ public:
                std::vector<SlotConfig> slots);
 
     void Start();
-
-    // Strategy dropped its local book → next MakeTick sends Keyframe to this slot only.
-    void QueueResync(std::uint32_t slot_id);
 
     // TZ §5.4: recover impact → match due vs effective copy → md_lag patches +
     // trades. Shared tick.books unused.
@@ -94,7 +90,6 @@ private:
     std::unordered_map<std::uint32_t, SlotOrders> slot_orders_;
     std::unordered_map<std::uint32_t, ImpactState> slot_impact_;
     std::unordered_map<std::uint32_t, std::vector<Trade>> pending_trades_;
-    std::unordered_set<std::uint32_t> resync_slots_;
     std::uint64_t last_match_pop_ts_ns_ = 0;
     bool matched_this_pop_ = false;
 };

@@ -83,7 +83,7 @@ message End {}
 message Tick {
   uint64 pop_ts_ns = 1;
   // Shared full books — typically only the first tick (all strategies seed
-  // from this). Later resyncs are per-slot in SlotBookUpdate, not here.
+  // from this). Later patches are per-slot in SlotBookUpdate, not here.
   repeated SharedBookUpdate books = 2;
   repeated SlotTick slots = 3;
 }
@@ -99,8 +99,7 @@ message SharedBookUpdate {
 
 message SlotTick {
   uint32 slot_id = 1;
-  // Per-component patches after the shared seed: Diff normally; Keyframe only
-  // when the strategy asked for a resync after dropping its local book.
+  // Per-component patches: Keyframe on the slot's first Tick, Diff afterwards.
   repeated SlotBookUpdate books = 2;
   repeated Trade trades = 3;
 }
@@ -237,20 +236,13 @@ message OrdersAck {
 // Stream envelopes (used by rpc.proto)
 // ---------------------------------------------------------------------------
 
-// Strategy dropped its local book for a component (or all if component_id empty)
-// and needs a per-slot keyframe on a later Tick — not a global shared resync.
-message ResyncRequest {
-  uint32 slot_id = 1;
-  string component_id = 2;       // empty → all components for this slot
-}
-
 message ClientMessage {
   oneof payload {
     Open open = 1;           // must be first; fixes population for the run
     OrderBatch orders = 2;   // after Tick; may be empty
-    Advance advance = 3;     // after OrdersAck (ok)
+    // After Tick (no orders this step) or after ok OrdersAck. Wrong phase → Error #3.
+    Advance advance = 3;
     Close close = 4;         // graceful shutdown; no ack — just hang up
-    ResyncRequest resync = 5;
   }
 }
 

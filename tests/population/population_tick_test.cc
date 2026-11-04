@@ -76,27 +76,6 @@ TEST(PopulationTick, LaterTickSendsPerSlotDiff) {
     EXPECT_EQ(tick.slots[0].books[0].bids[0].qty, 8u);
 }
 
-TEST(PopulationTick, QueueResyncSendsKeyframeNotDiff) {
-    auto tape = std::make_unique<FakeTape>(std::vector<SnapshotEvent>{
-        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
-        Ev(2, 200, {{100.0, 8}}, {{101.0, 5}}),
-    });
-
-    Population pop("C1", 0.01, std::move(tape), OneSlot());
-    pop.Start();
-    (void)pop.MakeTick();
-    ASSERT_TRUE(pop.Advance());
-
-    pop.QueueResync(1);
-    const auto tick = pop.MakeTick();
-
-    ASSERT_EQ(tick.slots.size(), 1u);
-    ASSERT_EQ(tick.slots[0].books.size(), 1u);
-    EXPECT_EQ(tick.slots[0].books[0].kind, BookPatchKind::Keyframe);
-    ASSERT_EQ(tick.slots[0].books[0].bids.size(), 1u);
-    EXPECT_EQ(tick.slots[0].books[0].bids[0].qty, 8u);
-}
-
 TEST(PopulationTick, MdLagSlotsSeeDifferentBooks) {
     auto tape = std::make_unique<FakeTape>(std::vector<SnapshotEvent>{
         Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),

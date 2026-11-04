@@ -13,7 +13,7 @@ namespace population {
 //
 // Cadence:
 // - `Tick.books` (shared) unused in P0 with per-slot md_lag.
-// - Each slot: Keyframe on first send / Resync; else Diff of file view at
+// - Each slot: Keyframe on first send; else Diff of file view at
 //   pop_ts - md_lag vs that slot's last sent book.
 
 enum class BookPatchKind {
@@ -44,7 +44,7 @@ struct SlotTickView {
 
 struct TickView {
     std::uint64_t pop_ts_ns = 0;
-    std::vector<SharedBookView> books;  // shared seed / not used for per-slot resync
+    std::vector<SharedBookView> books;  // shared seed (unused when md_lag differs)
     std::vector<SlotTickView> slots;
 };
 

@@ -80,14 +80,6 @@ void Population::Start() {
     started_ = true;
 }
 
-void Population::QueueResync(std::uint32_t slot_id) {
-    if (!HasSlot(slot_id)) {
-        throw std::invalid_argument("population: QueueResync unknown slot_id " +
-                                    std::to_string(slot_id));
-    }
-    resync_slots_.insert(slot_id);
-}
-
 SnapshotEvent Population::ViewSnap(const SlotConfig& cfg) const {
     const std::uint64_t pop = clock_.pop_ts_ns();
     const std::uint64_t view_ts =
@@ -172,10 +164,8 @@ TickView Population::MakeTick() {
 
         const SnapshotEvent view = EffectiveView(cfg);
         SlotSendState& sent = slot_send_.at(cfg.slot_id);
-        const bool slot_resync = resync_slots_.erase(cfg.slot_id) > 0;
-        const bool need_keyframe = !sent.has_sent || slot_resync;
 
-        if (need_keyframe) {
+        if (!sent.has_sent) {
             SlotBookUpdateView patch;
             patch.component_id = component_id_;
             patch.kind = BookPatchKind::Keyframe;
