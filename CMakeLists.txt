@@ -154,7 +154,8 @@ if(CMF_BUILD_TESTS)
   gtest_discover_tests(population_tests)
 
   add_executable(transport_tests
-    tests/transport/spsc_ring_test.cc)
+    tests/transport/spsc_ring_test.cc
+    tests/transport/control_test.cc)
   target_link_libraries(transport_tests PRIVATE
     cmf::transport
     GTest::gtest_main)
