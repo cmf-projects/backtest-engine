@@ -1,9 +1,10 @@
 # ТЗ: популяции стратегий в backtest venue
 
 Техническое задание по итогам дизайн-сессии.  
-Смежные документы (пока **не** переписываем под это ТЗ):
+Смежные документы:
 
-- черновик плана — [`POPULATION_PLAN.md`](POPULATION_PLAN.md)
+- **план работ (писать код)** — [`POPULATION_IMPL.md`](POPULATION_IMPL.md)
+- черновик архитектуры — [`POPULATION_PLAN.md`](POPULATION_PLAN.md)
 - глоссарий — [`GLOSSARY.md`](GLOSSARY.md)
 - CMF — [`TASK.md`](TASK.md)
 - контекст репо — [`CONTEXT.md`](CONTEXT.md)
@@ -15,11 +16,21 @@
 
 ## 1. Цель
 
-Venue обслуживает **популяции** стратегий на **общей ленте** (один `pop_ts`, одно
-окно `BookDelta`), при этом у каждой стратегии **свой** effective book (свои
-resting + свой impact). Логику геномов / популяций запускает **отдельный
-Population Service**; связь с venue — **gRPC**, один bidi stream на популяцию,
-**pull** по одному тику.
+Venue обслуживает **популяции** стратегий на **общей ленте** (один `pop_ts`),
+при этом у каждой стратегии **свой** effective book на **каждую** ногу bundle
+(свои resting + свой impact). Логику геномов / популяций ведёт **Trading Engine**;
+связь с venue — **unix domain socket** (создание очередей) + **две SPSC** на
+прогон (весь протокол), **pull** по одному тику.
+
+**Книги популяции (канон):** до **трёх** компонент — **spot**, **futures**,
+**option**. Если какой-то ноги нет в датасете / Open — считаем **меньше**
+(1 или 2); не подставляем пустышку «ради тройки». Один `pop_ts`, merge лент
+по `ts_ns` (§6).
+
+**Сейчас в коде** (`Population`) — ещё **одна** книга; это отставание
+реализации, не смена договорённости.
+
+**gRPC снят с канона:** отдельный runtime и лишняя стоимость на горячем пути.
 
 CMF TCP (`feed` + `orders`) остаётся 1-slot smoke / legacy engine, **не**
 мультиплекс популяций.
@@ -30,9 +41,9 @@ CMF TCP (`feed` + `orders`) остаётся 1-slot smoke / legacy engine, **н�
 
 | Роль | Процесс | Ответственность |
 | --- | --- | --- |
-| **Venue** | `backtest` / venue-сервис | Датасет, TapeWindow, матч, impact, working orders, Exec/Trades |
-| **Population Service** | отдельный сервис | Запуск популяций, код стратегий, учёт филлов для маржи/оборота/PnL |
-| **Strategy (геном)** | внутри Population Service | Решение по view; помнит в основном **сделки**; working book не дублирует |
+| **Venue** | `backtest` | Датасет, TapeWindow, матч, impact, working orders, Exec/Trades; слушает UDS |
+| **Trading Engine** | внешний процесс | Подключается к UDS, открывает популяцию, код стратегий, учёт филлов / маржи / PnL |
+| **Strategy (геном)** | внутри Trading Engine | Решение по view; помнит в основном **сделки**; working book не дублирует |
 
 Стратегии **не конкурируют** за книгу и **не видят** чужие ордера/филлы.
 
@@ -64,118 +75,198 @@ effective_ts_i = t_seen + Δ_i     # когда новый ордер matchable
 
 ---
 
-## 4. Лента и память (одна на популяцию)
+## 4. Лента и память (одна на популяцию, книг — до трёх)
+
+Один `pop_ts` и одно окно времени на популяцию; внутри — **до трёх** file-книг
+(spot / futures / option), у каждой свой `TapeWindow` / cursor по своему JSONL.
+Слот держит **ImpactState + Working на каждую присутствующую** ногу.
 
 ```text
 SnapshotFloor = pop_ts - max_i(md_lag_i)   # хватает истории для самого «тупого» view
-TapeWindow    = snap@floor ⊕ BookDelta… ⊕ … до pop_ts
+TapeWindow_c  = snap@floor ⊕ BookDelta… ⊕ … до pop_ts   # per component_id
 ```
 
-- Файл/мердж bundle читается **один раз** в окно.
-- **BookDelta** = патч шага ленты (100→101). Не называть «offset» (не путать с
-  отставанием слота в старых черновиках).
-- При **Advance**: `pop_ts` += шаг; пол ползёт; префикс окна можно дропнуть.
-- Слот **не** хранит копию file-book; только `ImpactState` + Working.
+- Bundle (1…3 ноги) мержится в общий timeline по `ts_ns`; читается **один раз**
+  в окна компонент.
+- **BookDelta** = патч шага ленты **одной** ноги (100→101). Не называть «offset».
+- Нога без события на этом `t` → **keep last** её file-book.
+- При **Advance**: `pop_ts` += шаг; полы окон ползут; префиксы можно дропнуть.
+- Слот **не** копирует file-book; только `ImpactState` + Working **per component**.
 
-Effective book слота:
+Effective book слота × ноги:
 
 ```text
-effective_qty = max(0, file_qty - eaten_slot)
-+ resting orders этого слота в картине view
+effective_qty[c] = max(0, file_qty[c] - eaten_slot[c])
++ resting orders этого слота по component_id c
 ```
 
-**Impact:** per-slot `eaten` + экспоненциальное восстановление при живом уровне в
-файле; уровень исчез из файла → сброс eaten. **`λ` — per-slot**
+**Impact:** per-slot × component `eaten` + экспоненциальное восстановление при
+живом уровне в файле этой ноги; уровень исчез → сброс eaten. **`λ` — per-slot**
 (дефолт с популяции): `λ = 0` выключает impact; `λ > 0` включает recovery.
 
 ---
 
-## 5. Транспорт gRPC
+## 5. Транспорт: Unix socket + SPSC
+
+**Инвариант:** логика протокола (§5.3–5.4, state machine, типы сообщений)
+**та же**, что была задумана для stream. Меняется только носитель:
+всё общение прогона — **через пару очередей**; отдельно — канал, который
+эти очереди **создаёт**.
 
 ### 5.1 Топология
 
 | Решение | Выбор |
 | --- | --- |
-| Кто ведёт часы | **Pull:** Population Service; venue сам тики не пушит |
+| Канал создания | **Unix domain socket**: Engine dial’ит venue → «создай пару очередей» |
+| Общение прогона | **Две SPSC** — весь протокол (Open → … → End/Close) только здесь |
+| Кто ведёт часы | **Pull:** Engine; venue сам тики не пушит |
 | Шаг | **Последовательно каждый тик** (или будущий coarse stride) |
-| Каналы | **Один bidi stream на популяцию** |
-| Feed/orders split | **Нет** (не CMF-пара); разные **типы событий** в одном stream |
 | CMF TCP | Только 1-slot smoke |
+| gRPC | **Не используем** (runtime / лишняя стоимость) |
 
-Зачем pull: сервис может не успевать считать популяцию; без Advance рынок не
+```text
+Trading Engine ── unix socket ──► Venue
+   │     create 2×SPSC | reject          # до прогона
+   │     SessionEnded { ok | fatal }     # после прогона (норма / критика)
+   │
+   └── SPSC out / in ── протокол тиков  # Open…End/Error/Close
+```
+
+**Квоты (позже):** нет свободной квоты → отказ на UDS, SPSC не поднимаем.
+Квоты **не в P0** — контракт «успех создания = две очереди».
+
+UDS **живёт на весь прогон**: не только create, но и финальный
+`SessionEnded` (§5.5).
+
+Зачем pull: engine может не успевать считать популяцию; без Advance рынок не
 убегает, старые снепшоты не дропаются раньше времени.
 
 Зачем один тик за round-trip: видна динамика исполнения; можно докинуть ордера
 на следующем тике. Немой `Advance(+N)` без промежуточных view/trades — **не
 делаем**.
 
-### 5.2 Один bidi stream (control + data)
+### 5.2 Канал создания vs очереди
 
-Отдельных unary Open/Close **нет**. Один bidi stream на популяцию:
+1. Engine dial’ит **unix socket** и просит **создать пару SPSC** (здесь же —
+   проверка квоты, когда появится). Ответ: handles/имена очередей или отказ.
+2. Дальше **вся** протокольная переписка — **только по очередям**:
+   - **out** (venue → engine): OpenAck, Tick, OrdersAck, End, Error;
+   - **in** (engine → venue): Open, OrderBatch, Advance, Close.
+3. Первое сообщение в in после создания = **`Open`** (`population_id` + слоты /
+   dataset / components) → популяция фиксируется; mid-run конфиг не меняем.
+4. Цикл §5.4 по SPSC, пока лента жива; нормальный конец — **`End`** в out.
+5. **`Close`** в in — graceful shutdown (досрочный снос прогона).
 
-1. **Первое сообщение клиента** = control: `population_id` + параметры слотов
-   / dataset → популяция **фиксируется**. Mid-run конфиг не меняем.
-2. Дальше **data-цикл** (§5.4) по кругу, пока лента жива.
-3. Нормальный конец: venue шлёт **`End`** (лента кончилась).
-4. Опционально клиент шлёт **`Close`** — только graceful shutdown (досрочно
-   свернуть прогон), не смена конфига и не control mid-run.
+UDS **не** несёт Tick/Orders — только create/reject и финальный `SessionEnded`
+(§5.5). Teardown очередей — после `SessionEnded` и drain/timeout.
 
-In-process callback API **пока не делаем** (только gRPC stream).
+In-process callback API **пока не делаем**.
 
-### 5.3 Типы событий в stream (черновик имён)
+### 5.3 Типы событий (логическая схема; имена как в proto-черновике)
 
-| Когда | Направление | Тип | Содержимое |
-| --- | --- | --- |
-| Старт | PS → Venue | `Open` | конфиг популяции |
-| Старт | Venue → PS | **`OpenAck`** | всегда; `status` + при ERROR — `errors[]` |
-| Каждый тик | Venue → PS | `Tick` | books + trades; затем ждём клиента |
-| После Tick | PS → Venue | `OrderBatch` **или** `Advance` | другого не ждём |
-| Если OrderBatch | Venue → PS | **`OrdersAck`** | всегда; `status` + при ERROR — `errors[]` |
-| После ok Ack | PS → Venue | `Advance` | затем venue → следующий Tick \| End |
-| Конец ленты | Venue → PS | `End` | **без ack** — закрыть соединение |
-| Graceful stop | PS → Venue | `Close` | **без ack** в любом клиентском стейте |
-| Сбой stream | Venue → PS | `Error` (поле 3) | неверный стейт (см. ниже) |
+Фрейминг байтов в SPSC — отдельный шаг; **gRPC не цель**.
+Логические типы и state machine **без изменений по смыслу**.
+
+| Когда | Направление | Тип | Канал | Содержимое |
+| --- | --- | --- | --- | --- |
+| Подготовка | Engine ↔ Venue | create queues | UDS | handles 2×SPSC или отказ (квота) |
+| Финал | Venue → Engine | **`SessionEnded`** | UDS | итог прогона: ok / fatal (+ code); см. §5.5 |
+| Старт | Engine → Venue | `Open` | SPSC in | конфиг популяции |
+| Старт | Venue → Engine | **`OpenAck`** | SPSC out | всегда; `status` + при ERROR — `errors[]` |
+| Каждый тик | Venue → Engine | `Tick` | SPSC out | books + trades; затем ждём клиента |
+| После Tick | Engine → Venue | `OrderBatch` **или** `Advance` | SPSC in | другого не ждём |
+| Если OrderBatch | Venue → Engine | **`OrdersAck`** | SPSC out | всегда; `status` + при ERROR — `errors[]` |
+| После ok Ack | Engine → Venue | `Advance` | SPSC in | затем venue → следующий Tick \| End |
+| Конец ленты | Venue → Engine | `End` | SPSC out | **без ack** — закрыть прогон |
+| Graceful stop | Engine → Venue | `Close` | SPSC in | **без ack** в любом клиентском стейте |
+| Сбой протокола | Venue → Engine | `Error` | SPSC out | неверный стейт (см. ниже) |
 
 **Почему Ack, а не bare Error:** после `Open` / `OrderBatch` клиент всегда ждёт
 один тип (`OpenAck` / `OrdersAck`). Сначала смотрит **`status`**:
 `ACK_STATUS_OK` → всё хорошо, `errors` пуст; `ACK_STATUS_ERROR` → смотреть
 `errors[]`.
 
-- **`OrdersAck` ERROR:** all-or-nothing, батч не применён; в `errors[]` —
-  каждая плохая строка (`slot_id`, `client_order_id`, `code`). Можно повторить
-  batch / `Close` на том же stream.
-- **`OpenAck` ERROR:** сломанный конфиг (слоты, Δ, components, …); в `errors[]`
-  все найденные проблемы; venue **закрывает соединение** (на этом stream Open
-  не чинят).
+- **`OrdersAck` ERROR:** wire/схема — на потом (**recoverable ack**): all-or-nothing,
+  retry batch без сноса. Сейчас битый batch → fatal §5.5.
+- **`OpenAck` ERROR:** сломанный конфиг → fatal §5.5 (ждать Close | timeout).
+  Отказ по **квоте** — ещё на UDS, до выдачи SPSC.
 
 Филлы — в `Tick.trades`.
 
-`End` / `Close` не подтверждаем — закрыть stream.
+`End` / `Close` / фатальный `Error` на SPSC — сигнал **стратегическому** циклу;
+официальное закрытие сессии для Engine — всегда **`SessionEnded` на UDS** (§5.5).
+
+### 5.5 Завершение и ошибки (UDS + SPSC)
+
+| Класс | Когда | Куда | Поведение |
+| --- | --- | --- | --- |
+| **Create reject** | квота / нельзя поднять SPSC / битый create | **только UDS** | очередей нет |
+| **Fatal run** | `OpenAck` ERROR, protocol `Error`, авария venue | SPSC `Error` (best-effort) + UDS `SessionEnded{fatal}` | стратегия **не** чинит; ждём `Close` или timeout |
+| **Normal end** | лента кончилась | SPSC `End` + UDS `SessionEnded{ok}` | штатный выход |
+| **Client Close** | Engine сам закрыл | UDS `SessionEnded{ok, CLIENT_CLOSE}` | без критики |
+| **Recoverable ack** | плохой `OrderBatch`, retry без сноса | `OrdersAck` ERROR | **позже** (§8.2); сейчас не опираемся |
+
+**Fatal: ожидаем `Close` от Engine.** Стратегия читает Error из SPSC → шлёт
+`Close` (подтверждение «увидели, гасим»). Venue после `Close` → teardown.
+
+**Если `Close` не пришёл за `drain_timeout` (default 60s):** venue **сам**
+аварийно завершает сессию: кратко пишет в `SessionEnded`, *что* сломалось
+(`reason_code` + короткий `message`), сносит SPSC, закрывает UDS. Без этого
+зависшие / нечитающие клиенты держат квоту вечно.
+
+**Почему ещё и UDS.** SPSC может быть полной / engine не в цикле — Error в
+очереди best-effort. `SessionEnded` на сокете — гарантированный итог; в
+аварийном timeout-пути это **единственное**, что Engine потом увидит при
+разборе (краткий диагноз обязателен).
+
+**Порядок fatal teardown (venue):**
+
+```text
+1. SPSC out ← Error | OpenAck ERROR   (best-effort, если out полна — см. ниже)
+2. in: принимать только Close; остальное игнор / no-op
+3. UDS ← SessionEnded{fatal, reason_code, message}   # кратко: что не так
+4. Ждать Close от Engine
+   — пришёл → teardown (Engine подтвердил чтение)
+   — drain_timeout → аварийный teardown сами (диагноз уже в SessionEnded)
+5. Снести SPSC; закрыть UDS
+```
+
+**Normal end:** SPSC `End` → `SessionEnded{ok}` → ждать `Close` / timeout
+так же (без «критики» в message).
+
+Если out полна на шаге 1 — не крутиться вечно (reserved slot / drop-oldest);
+истина для диагноза — в `SessionEnded`.
+
+**Create reject** — сразу ответ на UDS, без SPSC и без wait на Close.
+
+**Не делаем сейчас:** mid-run repair стратегии; recoverable `OrdersAck` как
+основной путь (заложим wire позже); хардкод 60s без конфига.
 
 #### State machine (venue, обязателен)
 
-Venue хранит фазу stream’а; неожиданное клиентское сообщение → **`Error` (поле 3)**
-и обычно конец stream.
+Venue хранит фазу прогона; неожиданное клиентское сообщение → **`Error`**
+и обычно конец прогона.
 
 ```text
+# UDS уже выдал 2×SPSC (иначе сюда не попадаем)
 AwaitOpen
   Open → OpenAck; if status=OK → send Tick → AwaitOrderOrAdvance
-         if status=ERROR → end stream (config broken)
+         if status=ERROR → §5.5 fatal teardown (OpenAck уже в SPSC)
 
 AwaitOrderOrAdvance          # только что ушёл Tick (или первый после Open)
-  OrderBatch → OrdersAck
-       status=OK    → AwaitAdvance
-       status=ERROR → остаёмся в AwaitOrderOrAdvance (retry batch / Close)
+  OrderBatch → (пока: валидация; битый batch → fatal §5.5;
+                позже: OrdersAck ERROR + retry без сноса)
+       ok → AwaitAdvance
   Advance  → apply; send Tick | End
        Tick → AwaitOrderOrAdvance
-       End  → done (клиент закрывает)
-  Close    → hang up
-  иное (повторный Open, …) → Error #3
+       End  → §5.5 normal (SessionEnded ok → ждать Close | timeout)
+  Close    → §5.5 SessionEnded{ok, CLIENT_CLOSE}
+  иное (повторный Open, …) → Error → §5.5 fatal (ждать Close | timeout)
 
-AwaitAdvance                 # после ok OrdersAck
-  Advance  → apply; send Tick | End → (Tick → AwaitOrderOrAdvance | done)
-  Close    → hang up
-  OrderBatch / Open / … → Error #3
+AwaitAdvance
+  Advance  → apply; send Tick | End → (Tick → AwaitOrderOrAdvance | §5.5 normal)
+  Close    → §5.5 SessionEnded{ok, CLIENT_CLOSE}
+  OrderBatch / Open / … → Error → §5.5 fatal (ждать Close | timeout)
 
 Запрещено (примеры → Error #3):
   Advance до первого Tick
@@ -191,16 +282,18 @@ Tick — ошибка.
 Стратегия для маржи/оборота/PnL — по полю **trades**.
 Working и ImpactState в venue. На wire:
 
-- **`Open.components`**: 1…N ног; у каждой уникальный **`component_id`**,
-  `role` (SPOT/FUTURE/OPTION — класс, не ключ), JSONL + class/sec/tick.
-  Несколько future/option — несколько Component с разными id.
-- **`Tick.books`**: общий keyframe **только на первом тике** (все стратегии
-  сидят с одного seed).
-- Дальше `Tick.books` пустой; патчи → **`SlotTick.books`**: Keyframe на первом
-  тике слота, дальше Diff. `ResyncRequest` нет — PS локальный book не сбрасывает.
-- Order/Trade с `component_id`. Один `Δ` на слот.
+- **`Open.components`**: **1…3** ноги типичного набора (SPOT / FUTURE / OPTION);
+  у каждой уникальный **`component_id`**, `role`, JSONL + class/sec/tick.
+  Нет ноги в Open → её нет в Tick (не шлём пустой book «для галочки»).
+  Несколько разных future/option (expiries) — допустимо как расширение; канон
+  прогона = спот + фьюч + опцион или подмножество.
+- **`Tick`**: books / overlays / trades **по `component_id`** для всех ног,
+  которые уже дали первое событие.
+- **`Tick.books`** (shared seed): на первом тике при одинаковом view; при
+  per-slot `md_lag` — патчи в **`SlotTick.books`** (Keyframe → Diff).
+- Order/Trade с `component_id`. Один `Δ` на слот (не три HELLO).
 
-P0 может открыть bundle из **одного** компонента.
+**Реализация сейчас:** один component — временно; цель — довести до 1…3.
 
 ### 5.4 Цикл одного тика (логический) — канон
 
@@ -216,8 +309,8 @@ P0 может открыть bundle из **одного** компонента.
 2. recovery impact по каждому слоту
 3. match due по каждому слоту независимо
    (effective_ts ≤ t; resting в порядке отправки в слоте)
-4. Venue → PS Tick: books + trades
-5. PS → Venue: либо OrderBatch → OrdersAck → Advance, либо сразу Advance
+4. Venue → Engine Tick (SPSC out): books + trades
+5. Engine → Venue: либо OrderBatch → OrdersAck → Advance, либо сразу Advance
 6. Advance: pop_ts → следующий event; SnapshotFloor; venue сам шлёт Tick|End
 ```
 
@@ -230,11 +323,15 @@ P0 может открыть bundle из **одного** компонента.
 
 ---
 
-## 6. ComponentBundle
+## 6. ComponentBundle (spot / futures / option)
 
-На один `pop_ts` — 1…N компонент (типично spot + future + option), merge по
-`ts_ns`. Нет данных роли → роли нет в манифесте. В `Tick` — effective books
-**всех** ролей слота на его `view_ts` (детали кодирования — §8).
+**Договорённость:** популяция считает **до трёх** книг — спот, фьючерс, опцион.
+Меньше — нормально, если какой-то ноги нет. Больше трёх ролей в одном прогоне
+не цель P0–P1 (несколько expiry одной роли — отдельное расширение).
+
+На один `pop_ts` — merge JSONL ног по `ts_ns`. Нет данных роли → роли нет в
+Open / нет в Tick. В `Tick` — effective books **всех присутствующих** ног слота
+на его `view_ts` (кодирование — §8.3, §8.5).
 
 Один lookahead/`Δ` на слот, не три разных HELLO на инструмент.
 
@@ -244,11 +341,11 @@ P0 может открыть bundle из **одного** компонента.
 
 | Фаза | Содержание | Готово, когда |
 | --- | --- | --- |
-| **P0** | Одна популяция, один JSONL; TapeWindow + BookDelta (или временно полные snap в окне); K слотов; impact с `λ = 0`; gRPC Tick/Order/Advance | Детерминированный повтор прогона; pull не обгоняет PS |
+| **P0** | Одна популяция; K слотов; impact `λ = 0`; UDS + 2×SPSC; **пока 1 JSONL** ок как подмножество bundle | Детерминированный повтор; pull не обгоняет Engine |
 | **P1** | Impact + per-slot `λ`; Match по effective; Working per-slot; trades в Tick; CMF 1-slot зелёный | Филл только у своего слота; recovery; `make run` CMF OK |
-| **P1b** | ComponentBundle merge fut/spot/opt | Один `pop_ts`, несколько books в Tick |
+| **P1b** | **Обязательный** ComponentBundle: spot + futures + option (или меньше, если нет ноги); merge по `ts_ns` | Один `pop_ts`; в Tick books всех присутствующих ног |
 | **Index** | Sidecar `ts → file_offset` / keyframes (старт всё равно с начала файла) | Быстрее читать длинный JSONL |
-| **P2** | Multi-population hardening, catalog датасетов, perf (stride и т.д.) | 2+ популяции стабильно |
+| **P2** | Multi-population + **квоты**; catalog датасетов; perf (stride и т.д.) | 2+ популяции стабильно; отказ Open при нет квоты |
 
 ### Модули кода (ориентир)
 
@@ -259,7 +356,8 @@ P0 может открыть bundle из **одного** компонента.
 | `impact/` | eaten + recovery |
 | `match/` | MatchOne vs effective view |
 | `population/` | slots, pop_ts, TapeWindow, Advance |
-| `transport/grpc/` | OpenPopulation + bidi stream |
+| `transport/uds/` | Unix socket listen; Open / OpenAck; (позже) квоты |
+| `transport/spsc/` | Пара очередей на прогон: venue→engine data, engine→venue requests |
 | `transport/cmf/` | 1-slot adapter |
 
 ---
@@ -281,20 +379,33 @@ P0 может открыть bundle из **одного** компонента.
 ### 8.2 Control API детали
 
 **Закрыто:** open = `population_id` + параметры → фиксация; mid-run
-конфиг/слоты не меняем (§5.2).
+конфиг/слоты не меняем (§5.2). Транспорт = **UDS control + 2×SPSC data**;
+gRPC не делаем.
 
 **Идентификатор ордера:** отдельного venue-`order_id` **нет**. Ключ =
 `(slot_id, client_order_id)`. Клиент задаёт `client_order_id` на `Order`; все
 ack / partial / fill / cancel / reject — по нему. `Cancel` несёт **тот же**
 `client_order_id`, что был на `Order`. После терминального состояния id мёртв;
 новый ордер — только с новым id. Уникальность в пределах слота — обязанность
-PS; venue reject’ит дубликат живого id.
+Engine; venue reject’ит дубликат живого id.
 
-**Ещё открыто:** точные имена RPC; attach-dataset отдельно или внутри Open.
+**Закрыто по lifecycle (§5.5):** UDS живёт весь прогон; create + `SessionEnded`;
+fatal → Error в SPSC → ждать **`Close`** (стратегия прочитала) иначе
+**timeout → сами аварийно** с кратким `message` что сломалось; normal End —
+тот же wait на Close.
+
+**Ещё открыто / позже:**
+- **recoverable `OrdersAck`** — retry batch без сноса прогона (wire можно
+  оставить в proto, поведение — не сейчас);
+- байтовый фрейминг create/`SessionEnded` / SPSC;
+- handles SPSC (path / fd / shm name);
+- reserved slot vs drop-oldest при полной out;
+- **квоты** — позже.
 
 ### 8.3 Кодирование book на wire — **закрыто**
 
-- Bundle в Open: 1…N `Component` с уникальным `component_id`; `role` = класс.
+- Bundle в Open: до 3 `Component` (spot / futures / option или меньше);
+  уникальный `component_id`; `role` = класс.
 - **`Tick.books`**: shared keyframe/diff **на component_id**; не копировать в слоты.
 - **`overlays`**: per-slot × component_id; абсолютный qty; `0` снимает уровень.
 - `trades` / Order — с `component_id`.
@@ -333,8 +444,9 @@ View = effective на `t - md_lag`. Нужен ли **исторический**
 
 ### 8.8 Multi-population fairness
 
-- Несколько stream’ов в одном процессе venue: thread-per-population? пул?
+- Несколько прогонов (пар SPSC) в одном процессе venue: thread-per-population? пул?
 - CPU quantum между популяциями.
+- Квоты на число одновременных Open (см. §5.1) — отдельный рычаг.
 
 ### 8.9 Ускорение (не P0)
 
@@ -342,19 +454,20 @@ View = effective на `t - md_lag`. Нужен ли **исторический**
   файла в один Tick (обычно last book), один round-trip на склейку.
 - Бинарный датасет вместо JSONL на горячем пути.
 
-### 8.10 IDL и совместимость — **закрыто (каркас)**
+### 8.10 Транспортный каркас — **закрыто (семантика)**
 
-Один bidi stream; первое сообщение клиента = Open; цикл Tick → Orders →
-Advance; нормальный конец = venue `End`; опционально клиент `Close` =
-graceful shutdown only. In-process API не в P0.
+UDS Open → OpenAck (+ 2×SPSC при OK); цикл Tick → Orders → Advance по SPSC;
+нормальный конец = venue `End`; опционально клиент `Close` = graceful
+shutdown only. In-process API не в P0. **gRPC не входит в план.**
 
-Точные имена proto/package/версия — при первом `.proto`, без смены семантики.
+Имена/схема сообщений могут жить в `protos/` как IDL без gRPC; wire =
+собственный фрейминг поверх UDS/SPSC (§8.2).
 
 ### 8.11 Документы
 
-- Позже синхронизировать [`POPULATION_PLAN.md`](POPULATION_PLAN.md) /
-  [`GLOSSARY.md`](GLOSSARY.md) с этим ТЗ (по отдельному решению).
-- ADR на «один `pop_ts` + pull gRPC + model D» — по запросу.
+- Синхронизировать [`POPULATION_PLAN.md`](POPULATION_PLAN.md) /
+  [`GLOSSARY.md`](GLOSSARY.md) с этим ТЗ (транспорт UDS+SPSC).
+- ADR на «один `pop_ts` + UDS/SPSC pull + model D» — по запросу.
 
 ---
 
@@ -366,13 +479,13 @@ graceful shutdown only. In-process API не в P0.
 | Часы популяции | Один `pop_ts` |
 | Видимость | Model D (`md_lag` + `Δ`); B = `md_lag=0` |
 | Лента | SnapshotFloor + BookDelta window |
-| Кто двигает время | Population Service (pull Advance) |
+| Кто двигает время | Trading Engine (pull Advance) |
 | Шаг | Каждый тик, со стримом динамики |
-| Транспорт | gRPC 1 stream: Open→цикл; End от venue; Close от клиента = graceful only; in-process нет |
+| Транспорт | UDS: create + SessionEnded; тики по 2×SPSC; fatal → Error → ждать Close иначе timeout+краткий диагноз; recoverable OrdersAck — позже |
 | `tape_stride` | Склейка N событий файла в один Tick; P0 = 1; не путать с price `tick_size` |
 | Старт ленты | Всегда первое событие файла; mid-file seek нет |
 | View на wire | books/overlays keyed by `component_id` + trades |
-| Bundle | `component_id` уникален; `role` = SPOT/FUTURE/OPTION; P0 ≥ 1 |
+| Bundle | До 3 ног: spot + futures + option (или меньше); `component_id` уникален; нет ноги → нет в Tick; код сейчас ещё 1 книга |
 | Выравнивание лент | Merge по `ts_ns` + keep last; без оффлайн-решётки |
 | Open / mid-run | `population_id`+params → fix; конфиг mid-run не трогаем |
 | Лимит L2 | 64 уровня на сторону |
@@ -381,7 +494,7 @@ graceful shutdown only. In-process API не в P0.
 | Между стратегиями | Нет конкуренции, нет видимости чужих филлов; Tick — батч по слотам |
 | TIF | DAY / IOC / FOK; `UNSPECIFIED` → `Error` |
 | Side | BUY / SELL; `UNSPECIFIED` → `Error` |
-| Phase 1 host | Отдельный Population Service (не embed-only) |
+| Phase 1 host | Trading Engine dial’ит venue по UDS (не embed-only) |
 | CMF | 1-slot smoke |
 | Impact config | Per-slot `λ`; `λ = 0` = off |
 | Немой multi-tick Advance | Нет |

@@ -2,7 +2,11 @@
 
 Документ фиксирует целевую архитектуру эволюции venue: обслуживание популяции
 стратегий на общем стакане с оффсетами горизонтов и per-strategy impact-state,
-затем multi-population через долгоживущий gRPC-подобный stream и индекс датасетов.
+затем multi-population через unix socket + SPSC и индекс датасетов.
+
+> **Канон:** [`POPULATION_TZ.md`](POPULATION_TZ.md).  
+> **Писать код по:** [`POPULATION_IMPL.md`](POPULATION_IMPL.md).  
+> Ниже — черновик архитектуры; при расхождении побеждает ТЗ / IMPL.
 
 Смежные документы:
 
@@ -25,10 +29,11 @@
 3. **Per-strategy state.** После наших филлов объём на уровне восстанавливается
    экспоненциально, если в следующем снепшоте из файла эти ордера / объём всё ещё
    видны — иначе стратегии необратимо ломают общий файл-стакан.
-4. **Мультикомпонентный датасет.** На один расчёт часто нужны 3 ленты: фьючерс +
-   спот + опцион — не один JSONL.
+4. **Мультикомпонентный датасет (канон).** На популяцию — до **трёх** книг:
+   спот + фьючерс + опцион; меньше, если ноги нет. Не один JSONL. Текущий код
+   ещё считает одну книгу — догнать в P1b.
 5. **Много популяций (future).** У каждой — свой стакан + оффсеты. Одна пара
-   CMF-портов не масштабируется: нужен уровень выше (gRPC stream, держать открытым).
+   CMF-портов не масштабируется: нужен уровень выше (UDS + пары SPSC; позже квоты).
 6. **Много датасетов.** Нужен быстрый старт сессии: индекс (B-tree / аналог) по
    времени / инструменту.
 
@@ -36,12 +41,11 @@
 
 | Фаза | Транспорт |
 | --- | --- |
-| Phase 1 | Venue + **Population Service** через gRPC bidi (одна или несколько популяций) |
-| Phase 2 | Control plane / индекс датасетов / multi-host hardening (тот же IDL) |
+| Phase 1 | Venue слушает **unix socket**; Trading Engine dial’ит и шлёт OpenPopulation |
+| Hot path | При успехе (позже — при наличии **квоты**) venue поднимает **2×SPSC**: out = venue→engine (Tick/Ack/End), in = engine→venue (Orders/Advance/Close) |
+| Phase 2 | Квоты, индекс датасетов, multi-population fairness |
 | Совместимость | CMF TCP (`feed` + `orders`) остаётся single-session путём и smoke-тестом, **не** multiplex |
-
-
-дополнительно поискать варианты, как это еще можно обслуживать
+| Не делаем | **gRPC** (отдельный runtime, лишняя стоимость на горячем пути) |
 
 ---
 
@@ -247,44 +251,44 @@ Population SharedCursor
 
 ---
 
-## 4. Транспорт: от одной пары портов к stream
+## 4. Транспорт: Unix socket + SPSC
 
 ### 4.1 Почему одна CMF-сессия не тянет
 
-CMF жёстко: 1 venue process ↔ 1 engine, два сокета, один `HELLO` / `Δ`, один origin
+CMF жёстко: 1 venue process ↔ 1 engine, два TCP, один `HELLO` / `Δ`, один origin
 `K`. В framing нет session / population id — мультиплекс популяций не влезает.
 
-### 4.2 Целевой слой
+### 4.2 Целевой слой (канон = ТЗ §5)
 
 ```text
-gRPC / popstream ControlPlane (long-lived)
-  OpenPopulation / AttachDatasetBundle / AddStrategySlot / ClosePopulation
+Unix socket  (весь прогон)
+  create 2×SPSC | reject
+  SessionEnded { ok | fatal }     # и норма, и критика — сюда
         │
         ▼
-DataStream per population (bidi, batched)
-  MarketView · Orders · Advance / HorizonAck
+2× SPSC — протокол тиков
+  out: OpenAck / Tick / OrdersAck / End / Error   # Error/End = hot path
+  in:  Open / OrderBatch / Advance / Close
         │
         ▼
 PopulationScheduler ── SharedCursor + Index
                    └── StrategySlots (state)
 ```
 
-- Один долгоживущий канал процесса (или stream per population).
-- Control: открыть популяцию, привязать bundle, слоты, `λ`, `H_unit`.
-- Data stream: батчи market views + order replies с `slot_id`; клиент шлёт
-  orders / `TIME` с `slot_id`.
-- CMF TCP — адаптер «1 population, 1 slot» для существующего engine / Python stand-in.
-
-**Phase 1 сразу gRPC** (Population Service ↔ Venue). Не изобретать второй ASCII
-line protocol; CMF TCP только как 1-slot smoke / legacy engine.
+- Логика тиков та же; носитель = очереди, не gRPC.
+- UDS = create + финальный `SessionEnded` (гарантия, даже если SPSC полна).
+- Fatal: Error в SPSC → SessionEnded(краткий диагноз) → ждать **Close**
+  (стратегия прочитала); нет Close за timeout → аварийный teardown сами.
+- Recoverable `OrdersAck` — позже.
+- CMF TCP — адаптер «1 population, 1 slot» / smoke.
 
 ### 4.3 Много популяций
 
 - Изоляция: свой SharedCursor, ImpactStates, bundle (или shared read-only mmap
-  датасета + свой cursor).
+  датасета + свой cursor); своя пара SPSC.
 - Параллелизм: thread / pool per population.
 - Не шарить мутабельный book между популяциями.
-- Fairness: quantum’ы на популяцию, иначе одна max-offset популяция забьёт CPU.
+- Fairness: quantum’ы на популяцию; квота ограничивает число одновременных Open.
 
 ---
 
@@ -319,7 +323,8 @@ JSONL для горячего пути тяжёлый; medium-term — бина�
 | `match/` | MatchOne against **effective** book view |
 | `population/` | slots, offsets, scheduler |
 | `transport/cmf/` | тонкий адаптер Session → 1 slot |
-| `transport/grpc/` (или `popstream/`) | Phase 2 long-lived stream |
+| `transport/uds/` | Unix socket: OpenPopulation / OpenAck; квоты позже |
+| `transport/spsc/` | Пара очередей на прогон (data + requests) |
 
 Phase 1 без ломки `make run`: CMF path = population size 1, impact — optional flag.
 
@@ -342,7 +347,7 @@ Phase 1 без ломки `make run`: CMF path = population size 1, impact — o
 6. **`λ`** — гиперпараметр в config популяции, не хардкод.
 7. **Три компоненты ≠ три Δ.** Один lookahead на слот. Различия latency
    fut / spot / opt — stagger в merge, не разные HELLO.
-8. **Stream:** bidirectional + batching; не unary на каждый тик.
+8. **SPSC pair:** два однонаправленных кольца; не gRPC и не unary RPC на тик.
 9. **Backpressure.** Cursor не убегает от самого медленного слота вне `H_unit` —
    это инвариант catch-up.
 10. **Память.** Cursor / index read-only shared; дорогое — ImpactState и resting
@@ -355,7 +360,7 @@ Phase 1 без ломки `make run`: CMF path = population size 1, impact — o
 - Не копировать стакан на слот: file book + sparse impact map.
 - Вместо B-tree сразу — `lower_bound` по sorted ts-index; B-tree только для
   global catalog.
-- Один protobuf IDL: in-process и будущий gRPC / popstream.
+- Схема сообщений (можно из `protos/`) без gRPC runtime — фрейминг в UDS/SPSC.
 - Популяции — независимые задачи на thread pool.
 - CMF остаётся regression-путём на 1 slot.
 
@@ -366,7 +371,7 @@ Phase 1 без ломки `make run`: CMF path = population size 1, impact — o
 | Вопрос | Default |
 | --- | --- |
 | Конкурируют ли стратегии за книгу / видят ли чужие ордера? | Нет: свой effective book + свои resting на слот; общий только file cursor |
-| Транспорт Phase 1 | gRPC bidi: Population Service ↔ Venue; CMF single-slot остаётся smoke |
+| Транспорт Phase 1 | UDS Open + 2×SPSC: Trading Engine ↔ Venue; CMF single-slot остаётся smoke; квоты позже |
 | Индекс | Sidecar sorted `ts → file_offset`, не B-tree внутри файла |
 | Recovery | `eaten *= exp(-λ · Δt)` при apply file snapshot |
 | Leader сдвига | `argmax(offset)`, offset = отставание от head |
@@ -381,7 +386,7 @@ Phase 1 без ломки `make run`: CMF path = population size 1, impact — o
 | **P1** | ImpactState + exponential recovery; MatchOne по effective qty; per-slot Working; CMF = 1 slot | Филл уменьшает qty только у слота; при живом уровне в файле qty отрастает; `make run` зелёный |
 | **P1b** | ComponentBundle + merge timeline fut/spot/opt + manifest | Один merged clock; слот видит 3 книги |
 | **Index** | Sidecar `ts → file_offset` + seek на старте; catalog позже | Cold start без полного скана файла |
-| **P2** | Protobuf IDL + long-lived stream (`OpenPopulation` / data stream); CMF как 1-slot adapter | 2+ популяции в одном процессе; attach разных bundle |
+| **P2** | UDS + SPSC multi-population, квоты; CMF как 1-slot adapter | 2+ популяции в одном процессе; отказ Open без квоты |
 
 ### Рекомендуемый порядок работ
 
@@ -390,7 +395,7 @@ Phase 1 без ломки `make run`: CMF path = population size 1, impact — o
 3. P1 — impact + recovery; не ломать CMF smoke.
 4. P1b — bundle из нескольких компонент.
 5. Sidecar index + seek.
-6. P2 — protobuf IDL и долгоживущий stream на много популяций.
+6. P2 — UDS control + SPSC pairs на много популяций; квоты.
 
 ---
 
@@ -405,7 +410,7 @@ Phase 1 без ломки `make run`: CMF path = population size 1, impact — o
 ## 12. Пометка на будущее (не в скоупе P0–P1)
 
 **Tape stride / сжатие истории для ускорения бэктеста.**  
-Сейчас канон gRPC — **последовательный стрим каждого тика** (view → orders →
+Сейчас канон UDS+SPSC — **последовательный цикл каждого тика** (view → orders →
 fills → Advance). Позже: сжать ленту 1 ms → N ms для более быстрых прогонов;
 каждый страйд всё равно с round-trip (не немой прыжок). `md_lag` / `Δ` в тех же
 единицах. Точность vs скорость — отдельный рычаг, когда дойдём до perf.

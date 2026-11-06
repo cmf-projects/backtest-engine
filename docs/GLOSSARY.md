@@ -8,9 +8,10 @@ TCP protocol vocabulary in [`TASK.md`](TASK.md) / [`CONTEXT.md`](CONTEXT.md).
 | Term | Meaning |
 | --- | --- |
 | **Population** | Group of strategies that share **one** tape clock `pop_ts`, one `SharedCursor`, and one `ComponentBundle`. Strategies do **not** share a trading book: no competition for liquidity, no visibility of each other's orders. |
-| **Population Service** | Separate process that launches/runs populations and strategy logic. Talks to the venue over **gRPC**: **one bidi stream per population**. First client message opens/fixes the population; then Tick / orders / Advance in a loop; venue ends with `End`; client may send `Close` only as graceful shutdown. Tick carries one **shared_book** plus per-slot **overlay**/trades. No separate unary control RPCs; no in-process API in P0. Pull clock; no silent multi-tick jumps. |
+| **Trading Engine** | External process that dials the venue over a **unix domain socket**, opens a population, and runs strategy logic. On successful Open the venue allocates **two SPSC queues**: venue→engine (Tick / Acks / End) and engine→venue (OrderBatch / Advance / Close). Pull clock; no silent multi-tick jumps. Quotas on concurrent Opens are future. **gRPC is not used.** (Older docs said “Population Service” — same peer role.) |
+| **SPSC pair** | Two single-producer single-consumer queues for one population run after Open. Out = market/data from venue; in = requests from engine. Hot path; no gRPC runtime. |
 | **StrategySlot** | One participant: `slot_id`, **own** resting orders, **own** `ImpactState` / effective book, own `md_lag` / `Δ`. Same `pop_ts` as the population. Not an engine `cl_id`. |
-| **pop_ts** | Single logical time for the population (match clock / true tape time). All slots advance together. Moves only on Population Service **Advance** (pull). Advancing may drop `TapeWindow` prefix / move `SnapshotFloor`. |
+| **pop_ts** | Single logical time for the population (match clock / true tape time). All slots advance together. Moves only on Trading Engine **Advance** (pull via SPSC). Advancing may drop `TapeWindow` prefix / move `SnapshotFloor`. |
 | **SharedCursor** | Population tape control: where the file is materialized and how far `TapeWindow` is filled. Not a CMF `H` message. |
 | **SnapshotFloor** | Oldest timestamp kept materialized/reconstructible in `TapeWindow`: `pop_ts - max_i(md_lag_i)` (enough history for the stalest view). As `pop_ts` moves, the floor advances and prefix deltas are dropped. |
 | **TapeWindow** | Shared in-memory chain: snapshot at `SnapshotFloor` plus **BookDelta**s up through `pop_ts` (and prefetch). One window for the whole population — not per slot. |
@@ -22,14 +23,14 @@ TCP protocol vocabulary in [`TASK.md`](TASK.md) / [`CONTEXT.md`](CONTEXT.md).
 | **H_strat** | How far the **population** may advance `pop_ts` in one scheduler quantum before yield (fairness / batching). All slots walk that span together. |
 | **Visibility model D** | Canonical path: every tape update may be observed, but lagged by `md_lag`; orders take effect after `Δ`. |
 | **Visibility model B** | D with `md_lag = 0`; `Δ` still configurable. CMF adapter ≈ B. |
-| **ComponentBundle** | 1…N tapes on one `pop_ts`. Each leg has a unique **`component_id`** (wire key) plus `AssetRole` (SPOT/FUTURE/OPTION — class only; many futures/options allowed). Merged by `ts_ns`; leg with no event at `t` keeps last book. No offline common time grid required. |
+| **ComponentBundle** | Up to **three** tapes on one `pop_ts`: **spot**, **futures**, **option** (fewer if a leg is absent — do not invent empty books). Each leg has a unique **`component_id`** plus `AssetRole`. Merged by `ts_ns`; leg with no event at `t` keeps last book. Current code still runs one component; that is implementation lag, not a change of contract. |
 | **ImpactState** | Per-slot map of liquidity eaten by that slot’s fills, with exponential recovery toward the **file** book. Makes effective books differ across slots. Per-slot config is **`λ` only**: `λ = 0` means impact off (no eaten/recovery); `λ > 0` enables recovery. |
 | **Effective book** | Per-slot view/match surface: file book (at the relevant ts) minus that slot’s `ImpactState`, plus that slot’s resting orders only. Match uses this inside the venue. On the wire: `shared_book` ⊕ per-slot `overlay`. |
 | **shared_book** | One book update per Tick for all slots (keyframe or diff of the common/file view). Not duplicated per slot. |
 | **overlay** | Per-slot levels where effective differs from `shared_book` (resting/impact). Absolute qty; `0` removes; empty = identical to shared. |
 | **BookDiff (wire)** | Changed levels with **absolute** qty (“now this much at price”), not ±delta; `0` removes the level (same rule as CMF `I`). Used for `shared_book` diffs and for `overlay`. |
 | **Trades (exec field)** | Separate field on each tick: fills/trades for that slot this step. Strategy uses this for margin/turnover/PnL — not inferred from book diff. |
-| **client_order_id** | Client-assigned order key for the population gRPC path. Lifetime id of the order: Order, fills, Cancel, and rejects all use the same id. Book key is `(slot_id, client_order_id)`. No separate venue `order_id` on this path (unlike CMF `ord_id`). |
+| **client_order_id** | Client-assigned order key for the population UDS/SPSC path. Lifetime id of the order: Order, fills, Cancel, and rejects all use the same id. Book key is `(slot_id, client_order_id)`. No separate venue `order_id` on this path (unlike CMF `ord_id`). |
 
 **Removed from the population path:** per-slot `virtual_ts` desync, `HorizonOffset` catch-up, `argmax(offset)` leader. Timing differences between strategies are **`md_lag` and `Δ` only**; trading differences are orders + impact.
 
@@ -87,8 +88,8 @@ File tape is shared; fills on slot A never change file book or slot B’s effect
 | **`K`** | Account ready / run origin stamp. | Opening a population |
 
 One CMF session = at most one population with one slot (compatibility adapter).
-Many populations use the long-lived population stream (`protos/rpc.proto` +
-`protos/messages.proto`), not a second pair of CMF ports.
+Many populations use **UDS Open + SPSC pairs** (message schema may still live in
+`protos/` **without** a gRPC runtime), not a second pair of CMF ports.
 
 ## Liquidity recovery
 

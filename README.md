@@ -6,8 +6,9 @@ feed (book) and orders.
 
 Protocol / assignment text: [`docs/TASK.md`](docs/TASK.md).  
 Domain terms and layout: [`docs/CONTEXT.md`](docs/CONTEXT.md).  
-Population architecture plan: [`docs/POPULATION_PLAN.md`](docs/POPULATION_PLAN.md)  
-([`docs/GLOSSARY.md`](docs/GLOSSARY.md)).  
+Population: ТЗ [`docs/POPULATION_TZ.md`](docs/POPULATION_TZ.md),  
+план работ [`docs/POPULATION_IMPL.md`](docs/POPULATION_IMPL.md),  
+глоссарий [`docs/GLOSSARY.md`](docs/GLOSSARY.md).  
 Protocol PDF: [`files/`](files/).
 
 ## Requirements
