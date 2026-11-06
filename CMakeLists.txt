@@ -104,8 +104,18 @@ target_include_directories(venue_lib
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>")
 target_link_libraries(venue_lib PUBLIC cmf::driver PRIVATE tomlplusplus::tomlplusplus)
 
-# Population path is separate from CMF venue for now; link when the gRPC app arrives.
+# Population path is separate from CMF venue for now; link when the UDS app arrives.
 # target_link_libraries(venue_lib PUBLIC cmf::population)
+
+# ---------------------------------------------------------------------------
+# Transport (header-only for now) — src/transport/
+# ---------------------------------------------------------------------------
+add_library(transport_lib INTERFACE)
+add_library(cmf::transport ALIAS transport_lib)
+
+target_include_directories(transport_lib INTERFACE
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>")
+target_compile_features(transport_lib INTERFACE cxx_std_20)
 
 # ---------------------------------------------------------------------------
 # App entrypoint — apps/backtest → binary name `backtest` (engine looks for it)
@@ -114,7 +124,7 @@ add_executable(backtest apps/backtest/main.cc)
 target_link_libraries(backtest PRIVATE cmf::venue)
 
 # ---------------------------------------------------------------------------
-# Tests (GoogleTest) — population smoke / unit
+# Tests (GoogleTest) — population + transport
 # ---------------------------------------------------------------------------
 option(CMF_BUILD_TESTS "Build unit tests" ON)
 
@@ -142,6 +152,13 @@ if(CMF_BUILD_TESTS)
     cmf::population
     GTest::gtest_main)
   gtest_discover_tests(population_tests)
+
+  add_executable(transport_tests
+    tests/transport/spsc_ring_test.cc)
+  target_link_libraries(transport_tests PRIVATE
+    cmf::transport
+    GTest::gtest_main)
+  gtest_discover_tests(transport_tests)
 endif()
 
 if(MSVC)
@@ -151,6 +168,7 @@ if(MSVC)
   target_compile_options(backtest PRIVATE /W4)
   if(CMF_BUILD_TESTS)
     target_compile_options(population_tests PRIVATE /W4)
+    target_compile_options(transport_tests PRIVATE /W4)
   endif()
 else()
   target_compile_options(dataset_lib PRIVATE -Wall -Wextra -Wpedantic)
@@ -159,5 +177,6 @@ else()
   target_compile_options(backtest PRIVATE -Wall -Wextra -Wpedantic)
   if(CMF_BUILD_TESTS)
     target_compile_options(population_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(transport_tests PRIVATE -Wall -Wextra -Wpedantic)
   endif()
 endif()
