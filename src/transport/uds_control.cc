@@ -1,7 +1,6 @@
 #include "transport/uds_control.hpp"
 
-#include "transport/uds_framing.hpp"
-
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -9,7 +8,6 @@
 #include <cerrno>
 #include <cstring>
 #include <stdexcept>
-#include <vector>
 
 namespace transport {
 namespace {
@@ -52,34 +50,6 @@ void CloseFd(int fd) noexcept {
     }
     buf.insert(buf.end(), tmp, tmp + n);
     return true;
-}
-
-[[nodiscard]] bool ReadFrame(int fd, ParsedFrame& frame) {
-    std::vector<std::uint8_t> buf;
-    while (true) {
-        std::size_t consumed = 0;
-        if (TryParseFrame(buf.data(), buf.size(), frame, &consumed)) {
-            if (consumed < buf.size()) {
-                // Leftover bytes are unexpected for this handshake step.
-                return false;
-            }
-            return true;
-        }
-        if (!ReadSome(fd, buf)) {
-            return false;
-        }
-    }
-}
-
-[[nodiscard]] bool WriteFrame(int fd, ControlMsgType type,
-                              const std::vector<std::uint8_t>& payload) {
-    const auto bytes = Frame(type, payload);
-    return WriteAll(fd, bytes.data(), bytes.size());
-}
-
-CreateAck ReplyCreateAck(int conn_fd, CreateAck ack) {
-    (void)WriteFrame(conn_fd, ControlMsgType::CreateAck, EncodeCreateAck(ack));
-    return ack;
 }
 
 }  // namespace
@@ -167,28 +137,116 @@ int UdsConnect(const std::string& path) {
     return fd;
 }
 
-CreateAck ServeCreateQueues(int conn_fd, QueueRegistry& registry) {
+UdsConn::UdsConn(int fd) noexcept : fd_(fd) {}
+
+UdsConn::~UdsConn() {
+    CloseFd(fd_);
+    fd_ = -1;
+}
+
+UdsConn::UdsConn(UdsConn&& other) noexcept
+    : fd_(other.fd_), inbuf_(std::move(other.inbuf_)) {
+    other.fd_ = -1;
+}
+
+UdsConn& UdsConn::operator=(UdsConn&& other) noexcept {
+    if (this != &other) {
+        CloseFd(fd_);
+        fd_ = other.fd_;
+        inbuf_ = std::move(other.inbuf_);
+        other.fd_ = -1;
+    }
+    return *this;
+}
+
+bool UdsConn::WriteFrame(ControlMsgType type, const std::vector<std::uint8_t>& payload) {
+    if (fd_ < 0) {
+        return false;
+    }
+    const auto bytes = Frame(type, payload);
+    return WriteAll(fd_, bytes.data(), bytes.size());
+}
+
+bool UdsConn::ReadFrame(ParsedFrame& frame) {
+    if (fd_ < 0) {
+        return false;
+    }
+    while (true) {
+        std::size_t consumed = 0;
+        if (TryParseFrame(inbuf_.data(), inbuf_.size(), frame, &consumed)) {
+            inbuf_.erase(inbuf_.begin(),
+                         inbuf_.begin() + static_cast<std::ptrdiff_t>(consumed));
+            return true;
+        }
+        if (!ReadSome(fd_, inbuf_)) {
+            return false;
+        }
+    }
+}
+
+int UdsConn::ReadFrameDeadline(ParsedFrame& frame,
+                               std::chrono::steady_clock::time_point deadline) {
+    if (fd_ < 0) {
+        return -1;
+    }
+    while (true) {
+        std::size_t consumed = 0;
+        if (TryParseFrame(inbuf_.data(), inbuf_.size(), frame, &consumed)) {
+            inbuf_.erase(inbuf_.begin(),
+                         inbuf_.begin() + static_cast<std::ptrdiff_t>(consumed));
+            return 1;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            return 0;
+        }
+        const auto remain_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+        pollfd pfd{};
+        pfd.fd = fd_;
+        pfd.events = POLLIN;
+        const int pr = ::poll(&pfd, 1, static_cast<int>(remain_ms.count()));
+        if (pr == 0) {
+            return 0;
+        }
+        if (pr < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        }
+        if (!ReadSome(fd_, inbuf_)) {
+            return -1;
+        }
+    }
+}
+
+CreateAck ServeCreateQueues(UdsConn& conn, QueueRegistry& registry) {
+    auto reply = [&](CreateAck ack) {
+        (void)conn.WriteFrame(ControlMsgType::CreateAck, EncodeCreateAck(ack));
+        return ack;
+    };
+
     ParsedFrame frame;
-    if (!ReadFrame(conn_fd, frame) || frame.type != ControlMsgType::CreateQueues) {
-        return ReplyCreateAck(conn_fd,
-                              MakeCreateReject("", ErrorCode::CreateFailed, "bad create frame"));
+    if (!conn.ReadFrame(frame) || frame.type != ControlMsgType::CreateQueues) {
+        return reply(MakeCreateReject("", ErrorCode::CreateFailed, "bad create frame"));
     }
 
     CreateQueues req;
     if (!DecodeCreateQueues(frame.payload.data(), frame.payload.size(), req)) {
-        return ReplyCreateAck(conn_fd,
-                              MakeCreateReject("", ErrorCode::CreateFailed, "bad create payload"));
+        return reply(MakeCreateReject("", ErrorCode::CreateFailed, "bad create payload"));
     }
-    return ReplyCreateAck(conn_fd, registry.Create(req.population_id));
+    return reply(registry.Create(req.population_id));
 }
 
-CreateAck RequestCreateQueues(int conn_fd, const CreateQueues& req) {
-    if (!WriteFrame(conn_fd, ControlMsgType::CreateQueues, EncodeCreateQueues(req))) {
+CreateAck RequestCreateQueues(UdsConn& conn, const CreateQueues& req) {
+    if (!conn.WriteFrame(ControlMsgType::CreateQueues, EncodeCreateQueues(req))) {
         return MakeCreateReject(req.population_id, ErrorCode::CreateFailed, "write CreateQueues failed");
     }
 
     ParsedFrame frame;
-    if (!ReadFrame(conn_fd, frame) || frame.type != ControlMsgType::CreateAck) {
+    if (!conn.ReadFrame(frame) || frame.type != ControlMsgType::CreateAck) {
         return MakeCreateReject(req.population_id, ErrorCode::CreateFailed, "bad CreateAck frame");
     }
 
@@ -197,6 +255,56 @@ CreateAck RequestCreateQueues(int conn_fd, const CreateQueues& req) {
         return MakeCreateReject(req.population_id, ErrorCode::CreateFailed, "bad CreateAck payload");
     }
     return ack;
+}
+
+FinishSessionStatus FinishSession(UdsConn& conn, QueueRegistry& registry, const SessionEnded& ended,
+                                  std::uint32_t drain_timeout_ms) {
+    const auto destroy = [&] {
+        if (!ended.population_id.empty()) {
+            (void)registry.Destroy(ended.population_id);
+        }
+    };
+
+    if (!conn.WriteFrame(ControlMsgType::SessionEnded, EncodeSessionEnded(ended))) {
+        destroy();
+        return FinishSessionStatus::Failed;
+    }
+
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(drain_timeout_ms);
+
+    ParsedFrame frame;
+    const int got = conn.ReadFrameDeadline(frame, deadline);
+    if (got == 0) {
+        destroy();
+        return FinishSessionStatus::TimedOut;
+    }
+    if (got < 0 || frame.type != ControlMsgType::Close) {
+        destroy();
+        return FinishSessionStatus::Failed;
+    }
+
+    Close close;
+    if (!DecodeClose(frame.payload.data(), frame.payload.size(), close) ||
+        close.population_id != ended.population_id) {
+        destroy();
+        return FinishSessionStatus::Failed;
+    }
+
+    destroy();
+    return FinishSessionStatus::ClosedByClient;
+}
+
+bool WaitSessionEnded(UdsConn& conn, SessionEnded& out) {
+    ParsedFrame frame;
+    if (!conn.ReadFrame(frame) || frame.type != ControlMsgType::SessionEnded) {
+        return false;
+    }
+    return DecodeSessionEnded(frame.payload.data(), frame.payload.size(), out);
+}
+
+bool SendClose(UdsConn& conn, const Close& close) {
+    return conn.WriteFrame(ControlMsgType::Close, EncodeClose(close));
 }
 
 }  // namespace transport

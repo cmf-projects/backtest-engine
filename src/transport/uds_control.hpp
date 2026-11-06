@@ -1,12 +1,15 @@
 #pragma once
 
-// Unix-socket control channel: listen / connect / CreateQueues handshake.
-// Successful Create registers a real in-process SPSC pair in QueueRegistry.
+// Unix-socket control channel: listen / connect / CreateQueues / SessionEnded.
 
 #include "transport/control.hpp"
 #include "transport/queue_registry.hpp"
+#include "transport/uds_framing.hpp"
 
+#include <chrono>
+#include <cstdint>
 #include <string>
+#include <vector>
 
 namespace transport {
 
@@ -21,14 +24,12 @@ public:
     UdsListener(UdsListener&& other) noexcept;
     UdsListener& operator=(UdsListener&& other) noexcept;
 
-    // Bind + listen on path (unlinks stale socket file first).
     [[nodiscard]] static UdsListener Bind(std::string path);
 
     [[nodiscard]] bool valid() const noexcept { return fd_ >= 0; }
     [[nodiscard]] const std::string& path() const noexcept { return path_; }
     [[nodiscard]] int fd() const noexcept { return fd_; }
 
-    // Blocking accept. Returns connected fd, or -1 on error.
     [[nodiscard]] int Accept() const;
 
 private:
@@ -40,10 +41,46 @@ private:
 
 [[nodiscard]] int UdsConnect(const std::string& path);
 
-// Venue side: read CreateQueues, create SPSC pair in registry, reply CreateAck.
-[[nodiscard]] CreateAck ServeCreateQueues(int conn_fd, QueueRegistry& registry);
+// Connected UDS with a sticky read buffer (frames may coalesce in one recv).
+class UdsConn {
+public:
+    explicit UdsConn(int fd) noexcept;
+    ~UdsConn();
 
-// Engine side: send CreateQueues, wait CreateAck.
-[[nodiscard]] CreateAck RequestCreateQueues(int conn_fd, const CreateQueues& req);
+    UdsConn(const UdsConn&) = delete;
+    UdsConn& operator=(const UdsConn&) = delete;
+
+    UdsConn(UdsConn&& other) noexcept;
+    UdsConn& operator=(UdsConn&& other) noexcept;
+
+    [[nodiscard]] bool valid() const noexcept { return fd_ >= 0; }
+    [[nodiscard]] int fd() const noexcept { return fd_; }
+
+    [[nodiscard]] bool WriteFrame(ControlMsgType type, const std::vector<std::uint8_t>& payload);
+    [[nodiscard]] bool ReadFrame(ParsedFrame& frame);
+    // 1 = ok, 0 = timeout, -1 = error/EOF
+    [[nodiscard]] int ReadFrameDeadline(ParsedFrame& frame,
+                                        std::chrono::steady_clock::time_point deadline);
+
+private:
+    int fd_ = -1;
+    std::vector<std::uint8_t> inbuf_;
+};
+
+[[nodiscard]] CreateAck ServeCreateQueues(UdsConn& conn, QueueRegistry& registry);
+[[nodiscard]] CreateAck RequestCreateQueues(UdsConn& conn, const CreateQueues& req);
+
+enum class FinishSessionStatus : std::uint8_t {
+    ClosedByClient = 1,
+    TimedOut = 2,
+    Failed = 3,
+};
+
+[[nodiscard]] FinishSessionStatus FinishSession(
+    UdsConn& conn, QueueRegistry& registry, const SessionEnded& ended,
+    std::uint32_t drain_timeout_ms = kDefaultDrainTimeoutMs);
+
+[[nodiscard]] bool WaitSessionEnded(UdsConn& conn, SessionEnded& out);
+[[nodiscard]] bool SendClose(UdsConn& conn, const Close& close);
 
 }  // namespace transport

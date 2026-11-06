@@ -122,6 +122,23 @@ bool DecodeSessionEnded(const std::uint8_t* data, std::size_t size, SessionEnded
     return true;
 }
 
+std::vector<std::uint8_t> EncodeClose(const Close& msg) {
+    std::vector<std::uint8_t> out;
+    AppendString(out, msg.population_id);
+    return out;
+}
+
+bool DecodeClose(const std::uint8_t* data, std::size_t size, Close& out) {
+    const std::uint8_t* p = data;
+    const std::uint8_t* end = data + size;
+    Close tmp;
+    if (!ReadString(p, end, tmp.population_id) || p != end) {
+        return false;
+    }
+    out = std::move(tmp);
+    return true;
+}
+
 std::vector<std::uint8_t> Frame(ControlMsgType type, const std::vector<std::uint8_t>& payload) {
     std::vector<std::uint8_t> out;
     out.reserve(kHeaderSize + payload.size());

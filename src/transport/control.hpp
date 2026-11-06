@@ -54,6 +54,12 @@ struct SessionEnded {
     std::string message;
 };
 
+// Engine → venue on UDS after SessionEnded (confirm read / shutdown).
+// SPSC Close can be added later; control-plane Close is enough for drain.
+struct Close {
+    std::string population_id;
+};
+
 [[nodiscard]] inline CreateAck MakeCreateOk(std::string population_id, std::string out_queue,
                                             std::string in_queue) {
     CreateAck ack;

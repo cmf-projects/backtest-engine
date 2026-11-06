@@ -15,6 +15,7 @@ using transport::QueueMessage;
 using transport::QueueRegistry;
 using transport::RequestCreateQueues;
 using transport::ServeCreateQueues;
+using transport::UdsConn;
 using transport::UdsConnect;
 using transport::UdsListener;
 
@@ -39,21 +40,21 @@ TEST(UdsControl, CreateQueuesRegistersRings) {
     transport::CreateAck client_ack;
 
     std::thread server([&] {
-        const int conn = listener.Accept();
-        if (conn < 0) {
+        const int raw = listener.Accept();
+        if (raw < 0) {
             return;
         }
+        UdsConn conn(raw);
         (void)ServeCreateQueues(conn, registry);
-        ::close(conn);
     });
 
     std::thread client([&] {
-        const int conn = UdsConnect(path);
-        if (conn < 0) {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
             return;
         }
+        UdsConn conn(raw);
         client_ack = RequestCreateQueues(conn, req);
-        ::close(conn);
     });
 
     server.join();
@@ -81,21 +82,21 @@ TEST(UdsControl, EmptyPopulationIdRejected) {
 
     transport::CreateAck client_ack;
     std::thread server([&] {
-        const int conn = listener.Accept();
-        if (conn < 0) {
+        const int raw = listener.Accept();
+        if (raw < 0) {
             return;
         }
+        UdsConn conn(raw);
         (void)ServeCreateQueues(conn, registry);
-        ::close(conn);
     });
 
     std::thread client([&] {
-        const int conn = UdsConnect(path);
-        if (conn < 0) {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
             return;
         }
+        UdsConn conn(raw);
         client_ack = RequestCreateQueues(conn, CreateQueues{.population_id = ""});
-        ::close(conn);
     });
 
     server.join();

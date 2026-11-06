@@ -15,6 +15,7 @@ enum class ControlMsgType : std::uint32_t {
     CreateQueues = 1,
     CreateAck = 2,
     SessionEnded = 3,
+    Close = 4,
 };
 
 [[nodiscard]] std::vector<std::uint8_t> EncodeCreateQueues(const CreateQueues& msg);
@@ -27,6 +28,9 @@ enum class ControlMsgType : std::uint32_t {
 [[nodiscard]] std::vector<std::uint8_t> EncodeSessionEnded(const SessionEnded& msg);
 [[nodiscard]] bool DecodeSessionEnded(const std::uint8_t* data, std::size_t size,
                                       SessionEnded& out);
+
+[[nodiscard]] std::vector<std::uint8_t> EncodeClose(const Close& msg);
+[[nodiscard]] bool DecodeClose(const std::uint8_t* data, std::size_t size, Close& out);
 
 // Full frame = header + payload.
 [[nodiscard]] std::vector<std::uint8_t> Frame(ControlMsgType type,
