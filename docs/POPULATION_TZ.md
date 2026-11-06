@@ -117,26 +117,27 @@ effective_qty[c] = max(0, file_qty[c] - eaten_slot[c])
 
 | Решение | Выбор |
 | --- | --- |
-| Канал создания | **Unix domain socket**: Engine dial’ит venue → «создай пару очередей» |
-| Общение прогона | **Две SPSC** — весь протокол (Open → … → End/Close) только здесь |
+| Управляющий канал | **Один** долгоживущий UDS (full duplex): Engine ↔ Venue |
+| Общение прогона | **Две SPSC на популяцию** — протокол тиков только здесь |
+| Мультиплекс | Create / SessionEnded / служебное на **том же** UDS с `population_id` |
 | Кто ведёт часы | **Pull:** Engine; venue сам тики не пушит |
 | Шаг | **Последовательно каждый тик** (или будущий coarse stride) |
 | CMF TCP | Только 1-slot smoke |
-| gRPC | **Не используем** (runtime / лишняя стоимость) |
+| gRPC | **Не используем** |
 
 ```text
-Trading Engine ── unix socket ──► Venue
-   │     create 2×SPSC | reject          # до прогона
-   │     SessionEnded { ok | fatal }     # после прогона (норма / критика)
-   │
-   └── SPSC out / in ── протокол тиков  # Open…End/Error/Close
+Trading Engine ════ 1× UDS (всегда) ════ Venue     # create / reject / SessionEnded / …
+        │                                    │
+        ├── pop1: 2×SPSC  (тики)             │
+        ├── pop2: 2×SPSC                     │
+        └── …
 ```
 
-**Квоты (позже):** нет свободной квоты → отказ на UDS, SPSC не поднимаем.
-Квоты **не в P0** — контракт «успех создания = две очереди».
+**Не** accept-per-population и не второй сокет «для ответа»: один stream уже
+full duplex. Независимые популяции = разные пары SPSC + сообщения на общем UDS.
 
-UDS **живёт на весь прогон**: не только create, но и финальный
-`SessionEnded` (§5.5).
+**Квоты (позже):** нет квоты → reject Create на UDS, SPSC этой pop не поднимаем.
+UDS при этом **не** рвём.
 
 Зачем pull: engine может не успевать считать популяцию; без Advance рынок не
 убегает, старые снепшоты не дропаются раньше времени.
@@ -147,20 +148,20 @@ UDS **живёт на весь прогон**: не только create, но и
 
 ### 5.2 Канал создания vs очереди
 
-1. Engine dial’ит **unix socket** и просит **создать пару SPSC** (здесь же —
-   проверка квоты, когда появится). Ответ: handles/имена очередей или отказ.
-2. Дальше **вся** протокольная переписка — **только по очередям**:
+1. Engine **один раз** dial’ит главный UDS (или переподключается, если venue
+   перезапустили). Сокет живёт, пока жива связь Engine↔Venue.
+2. На UDS: **`Create`** (`population_id` + …) → venue поднимает **2×SPSC** для
+   этой pop \| reject (квота / ошибка). Ответ с handles на том же UDS.
+3. Протокол тиков этой pop — **только её** очередями:
    - **out** (venue → engine): OpenAck, Tick, OrdersAck, End, Error;
    - **in** (engine → venue): Open, OrderBatch, Advance, Close.
-3. Первое сообщение в in после создания = **`Open`** (`population_id` + слоты /
-   dataset / components) → популяция фиксируется; mid-run конфиг не меняем.
-4. Цикл §5.4 по SPSC, пока лента жива; нормальный конец — **`End`** в out.
-5. **`Close`** в in — graceful shutdown (досрочный снос прогона).
+4. Конец pop: SPSC терминал → UDS **`SessionEnded`** с тем же `population_id`
+   → ждать Close по SPSC \| timeout → **снести только эту пару SPSC**.
+   Главный UDS **остаётся** для других / следующих популяций.
+5. Несколько pop параллельно: несколько Create на одном UDS; служебные
+   сообщения различаем по `population_id`.
 
-UDS **не** несёт Tick/Orders — только create/reject и финальный `SessionEnded`
-(§5.5). Teardown очередей — после `SessionEnded` и drain/timeout.
-
-In-process callback API **пока не делаем**.
+UDS **не** несёт Tick/Orders. In-process API **пока не делаем**.
 
 ### 5.3 Типы событий (логическая схема; имена как в proto-черновике)
 
@@ -210,9 +211,9 @@ In-process callback API **пока не делаем**.
 `Close` (подтверждение «увидели, гасим»). Venue после `Close` → teardown.
 
 **Если `Close` не пришёл за `drain_timeout` (default 60s):** venue **сам**
-аварийно завершает сессию: кратко пишет в `SessionEnded`, *что* сломалось
-(`reason_code` + короткий `message`), сносит SPSC, закрывает UDS. Без этого
-зависшие / нечитающие клиенты держат квоту вечно.
+аварийно завершает **эту** популяцию: кратко пишет в `SessionEnded`, *что*
+сломалось (`reason_code` + короткий `message`), сносит **её** SPSC.
+Главный UDS не закрываем. Без timeout зависший клиент держит квоту вечно.
 
 **Почему ещё и UDS.** SPSC может быть полной / engine не в цикле — Error в
 очереди best-effort. `SessionEnded` на сокете — гарантированный итог; в
@@ -225,19 +226,19 @@ In-process callback API **пока не делаем**.
 1. SPSC out ← Error | OpenAck ERROR   (best-effort, если out полна — см. ниже)
 2. in: принимать только Close; остальное игнор / no-op
 3. UDS ← SessionEnded{fatal, reason_code, message}   # кратко: что не так
-4. Ждать Close от Engine
-   — пришёл → teardown (Engine подтвердил чтение)
+4. Ждать Close от Engine (по SPSC этой pop)
+   — пришёл → teardown этой pop
    — drain_timeout → аварийный teardown сами (диагноз уже в SessionEnded)
-5. Снести SPSC; закрыть UDS
+5. Снести **только** SPSC этой pop; UDS жив
 ```
 
-**Normal end:** SPSC `End` → `SessionEnded{ok}` → ждать `Close` / timeout
-так же (без «критики» в message).
+**Normal end:** SPSC `End` → `SessionEnded{ok, population_id}` → Close \| timeout
+→ снос SPSC этой pop.
 
 Если out полна на шаге 1 — не крутиться вечно (reserved slot / drop-oldest);
 истина для диагноза — в `SessionEnded`.
 
-**Create reject** — сразу ответ на UDS, без SPSC и без wait на Close.
+**Create reject** — ответ на UDS, без SPSC; UDS жив.
 
 **Не делаем сейчас:** mid-run repair стратегии; recoverable `OrdersAck` как
 основной путь (заложим wire позже); хардкод 60s без конфига.
@@ -389,10 +390,10 @@ ack / partial / fill / cancel / reject — по нему. `Cancel` несёт **
 новый ордер — только с новым id. Уникальность в пределах слота — обязанность
 Engine; venue reject’ит дубликат живого id.
 
-**Закрыто по lifecycle (§5.5):** UDS живёт весь прогон; create + `SessionEnded`;
-fatal → Error в SPSC → ждать **`Close`** (стратегия прочитала) иначе
-**timeout → сами аварийно** с кратким `message` что сломалось; normal End —
-тот же wait на Close.
+**Закрыто по lifecycle (§5.5):** **один** главный UDS на Engine↔Venue (full duplex,
+мультиплекс pop по `population_id`); create + `SessionEnded` на нём; fatal →
+Error в SPSC → ждать **`Close`** иначе timeout + краткий `message`; конец pop
+сносит только её SPSC, не UDS.
 
 **Ещё открыто / позже:**
 - **recoverable `OrdersAck`** — retry batch без сноса прогона (wire можно

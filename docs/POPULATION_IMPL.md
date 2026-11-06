@@ -59,7 +59,7 @@ src/dataset/               # + merge timeline 1…3 JSONL
 
 | # | Задача | Done when |
 | --- | --- | --- |
-| 1.1 | UDS server: listen, accept, `CreateQueues` → две очереди \| reject | тест: клиент получает handles |
+| 1.1 | UDS server: **один** listen/accept от Engine; `Create` → 2×SPSC \| reject; UDS не рвать после SessionEnded | тест: два Create подряд на одном fd |
 | 1.2 | `Session` driver: фазы AwaitOpen → … (пока **stub** population: echo/фикс Tick) | state machine покрыта unit’ами |
 | 1.3 | Fatal path: Error в out → `SessionEnded{fatal, code, short msg}` → ждать **Close** \| timeout → teardown | тест: Close приходит → очереди сняты; тест: нет Close → timeout teardown + message не пустой |
 | 1.4 | Normal path: End → `SessionEnded{ok}` → Close \| timeout | симметричный тест |

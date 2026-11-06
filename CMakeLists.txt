@@ -108,14 +108,17 @@ target_link_libraries(venue_lib PUBLIC cmf::driver PRIVATE tomlplusplus::tomlplu
 # target_link_libraries(venue_lib PUBLIC cmf::population)
 
 # ---------------------------------------------------------------------------
-# Transport (header-only for now) — src/transport/
+# Transport — src/transport/ (UDS control + SPSC ring header)
 # ---------------------------------------------------------------------------
-add_library(transport_lib INTERFACE)
+add_library(transport_lib
+  src/transport/uds_framing.cc
+  src/transport/uds_control.cc)
 add_library(cmf::transport ALIAS transport_lib)
 
-target_include_directories(transport_lib INTERFACE
-  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>")
-target_compile_features(transport_lib INTERFACE cxx_std_20)
+target_include_directories(transport_lib
+  PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>")
+target_compile_features(transport_lib PUBLIC cxx_std_20)
 
 # ---------------------------------------------------------------------------
 # App entrypoint — apps/backtest → binary name `backtest` (engine looks for it)
@@ -155,7 +158,8 @@ if(CMF_BUILD_TESTS)
 
   add_executable(transport_tests
     tests/transport/spsc_ring_test.cc
-    tests/transport/control_test.cc)
+    tests/transport/control_test.cc
+    tests/transport/uds_control_test.cc)
   target_link_libraries(transport_tests PRIVATE
     cmf::transport
     GTest::gtest_main)
@@ -165,6 +169,7 @@ endif()
 if(MSVC)
   target_compile_options(dataset_lib PRIVATE /W4)
   target_compile_options(population_lib PRIVATE /W4)
+  target_compile_options(transport_lib PRIVATE /W4)
   target_compile_options(venue_lib PRIVATE /W4)
   target_compile_options(backtest PRIVATE /W4)
   if(CMF_BUILD_TESTS)
@@ -174,6 +179,7 @@ if(MSVC)
 else()
   target_compile_options(dataset_lib PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(population_lib PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(transport_lib PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(venue_lib PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(backtest PRIVATE -Wall -Wextra -Wpedantic)
   if(CMF_BUILD_TESTS)

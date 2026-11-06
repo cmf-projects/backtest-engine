@@ -261,24 +261,19 @@ CMF жёстко: 1 venue process ↔ 1 engine, два TCP, один `HELLO` / `
 ### 4.2 Целевой слой (канон = ТЗ §5)
 
 ```text
-Unix socket  (весь прогон)
-  create 2×SPSC | reject
-  SessionEnded { ok | fatal }     # и норма, и критика — сюда
+Один UDS Engine↔Venue (full duplex, на всё время связи)
+  Create(population_id) | reject
+  SessionEnded(population_id, ok|fatal)
         │
         ▼
-2× SPSC — протокол тиков
-  out: OpenAck / Tick / OrdersAck / End / Error   # Error/End = hot path
+на каждую pop: 2× SPSC — протокол тиков
+  out: OpenAck / Tick / OrdersAck / End / Error
   in:  Open / OrderBatch / Advance / Close
-        │
-        ▼
-PopulationScheduler ── SharedCursor + Index
-                   └── StrategySlots (state)
 ```
 
-- Логика тиков та же; носитель = очереди, не gRPC.
-- UDS = create + финальный `SessionEnded` (гарантия, даже если SPSC полна).
-- Fatal: Error в SPSC → SessionEnded(краткий диагноз) → ждать **Close**
-  (стратегия прочитала); нет Close за timeout → аварийный teardown сами.
+- Один управляющий сокет; не accept-per-pop и не второй fd «для ответа».
+- Независимые pop = разные SPSC + `population_id` на общем UDS.
+- Fatal/normal: SessionEnded на UDS → Close \| timeout → снос **только** SPSC pop.
 - Recoverable `OrdersAck` — позже.
 - CMF TCP — адаптер «1 population, 1 slot» / smoke.
 
