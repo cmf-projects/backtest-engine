@@ -1,9 +1,10 @@
 #pragma once
 
 // Unix-socket control channel: listen / connect / CreateQueues handshake.
-// Queue names in CreateAck are placeholders until SPSC shm is wired.
+// Successful Create registers a real in-process SPSC pair in QueueRegistry.
 
 #include "transport/control.hpp"
+#include "transport/queue_registry.hpp"
 
 #include <string>
 
@@ -39,8 +40,8 @@ private:
 
 [[nodiscard]] int UdsConnect(const std::string& path);
 
-// Venue side: read CreateQueues, reply CreateAck (stub queue names on ok).
-[[nodiscard]] CreateAck ServeCreateQueues(int conn_fd);
+// Venue side: read CreateQueues, create SPSC pair in registry, reply CreateAck.
+[[nodiscard]] CreateAck ServeCreateQueues(int conn_fd, QueueRegistry& registry);
 
 // Engine side: send CreateQueues, wait CreateAck.
 [[nodiscard]] CreateAck RequestCreateQueues(int conn_fd, const CreateQueues& req);

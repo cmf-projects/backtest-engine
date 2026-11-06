@@ -1,3 +1,4 @@
+#include "transport/queue_registry.hpp"
 #include "transport/uds_control.hpp"
 
 #include <gtest/gtest.h>
@@ -10,6 +11,8 @@
 using transport::AckStatus;
 using transport::CreateQueues;
 using transport::ErrorCode;
+using transport::QueueMessage;
+using transport::QueueRegistry;
 using transport::RequestCreateQueues;
 using transport::ServeCreateQueues;
 using transport::UdsConnect;
@@ -26,21 +29,21 @@ std::string TempSockPath() {
 
 }  // namespace
 
-TEST(UdsControl, CreateQueuesRoundTrip) {
+TEST(UdsControl, CreateQueuesRegistersRings) {
     const std::string path = TempSockPath();
     auto listener = UdsListener::Bind(path);
     ASSERT_TRUE(listener.valid());
 
+    QueueRegistry registry;
     CreateQueues req{.population_id = "pop-42"};
     transport::CreateAck client_ack;
-    transport::CreateAck server_ack;
 
     std::thread server([&] {
         const int conn = listener.Accept();
         if (conn < 0) {
             return;
         }
-        server_ack = ServeCreateQueues(conn);
+        (void)ServeCreateQueues(conn, registry);
         ::close(conn);
     });
 
@@ -56,17 +59,25 @@ TEST(UdsControl, CreateQueuesRoundTrip) {
     server.join();
     client.join();
 
-    EXPECT_EQ(server_ack.status, AckStatus::Ok);
-    EXPECT_EQ(client_ack.status, AckStatus::Ok);
+    ASSERT_EQ(client_ack.status, AckStatus::Ok);
     EXPECT_EQ(client_ack.population_id, "pop-42");
-    EXPECT_EQ(client_ack.out_queue, "out:pop-42");
-    EXPECT_EQ(client_ack.in_queue, "in:pop-42");
-    EXPECT_EQ(client_ack.population_id, server_ack.population_id);
+    EXPECT_EQ(registry.size(), 1u);
+
+    auto* out = registry.FindOut(client_ack.out_queue);
+    ASSERT_NE(out, nullptr);
+    QueueMessage msg;
+    msg.size = 1;
+    msg.bytes[0] = 7;
+    EXPECT_TRUE(out->TryPush(msg));
+    QueueMessage got;
+    EXPECT_TRUE(out->TryPop(got));
+    EXPECT_EQ(got.bytes[0], 7);
 }
 
 TEST(UdsControl, EmptyPopulationIdRejected) {
     const std::string path = TempSockPath();
     auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
 
     transport::CreateAck client_ack;
     std::thread server([&] {
@@ -74,7 +85,7 @@ TEST(UdsControl, EmptyPopulationIdRejected) {
         if (conn < 0) {
             return;
         }
-        (void)ServeCreateQueues(conn);
+        (void)ServeCreateQueues(conn, registry);
         ::close(conn);
     });
 
@@ -92,4 +103,5 @@ TEST(UdsControl, EmptyPopulationIdRejected) {
 
     EXPECT_EQ(client_ack.status, AckStatus::Error);
     EXPECT_EQ(client_ack.reason_code, ErrorCode::CreateFailed);
+    EXPECT_EQ(registry.size(), 0u);
 }

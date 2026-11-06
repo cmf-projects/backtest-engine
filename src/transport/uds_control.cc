@@ -167,7 +167,7 @@ int UdsConnect(const std::string& path) {
     return fd;
 }
 
-CreateAck ServeCreateQueues(int conn_fd) {
+CreateAck ServeCreateQueues(int conn_fd, QueueRegistry& registry) {
     ParsedFrame frame;
     if (!ReadFrame(conn_fd, frame) || frame.type != ControlMsgType::CreateQueues) {
         return ReplyCreateAck(conn_fd,
@@ -179,15 +179,7 @@ CreateAck ServeCreateQueues(int conn_fd) {
         return ReplyCreateAck(conn_fd,
                               MakeCreateReject("", ErrorCode::CreateFailed, "bad create payload"));
     }
-    if (req.population_id.empty()) {
-        return ReplyCreateAck(conn_fd,
-                              MakeCreateReject("", ErrorCode::CreateFailed, "empty population_id"));
-    }
-
-    // Placeholder names until real SPSC shm allocation exists.
-    return ReplyCreateAck(
-        conn_fd,
-        MakeCreateOk(req.population_id, "out:" + req.population_id, "in:" + req.population_id));
+    return ReplyCreateAck(conn_fd, registry.Create(req.population_id));
 }
 
 CreateAck RequestCreateQueues(int conn_fd, const CreateQueues& req) {

@@ -159,6 +159,7 @@ if(CMF_BUILD_TESTS)
   add_executable(transport_tests
     tests/transport/spsc_ring_test.cc
     tests/transport/control_test.cc
+    tests/transport/queue_registry_test.cc
     tests/transport/uds_control_test.cc)
   target_link_libraries(transport_tests PRIVATE
     cmf::transport
