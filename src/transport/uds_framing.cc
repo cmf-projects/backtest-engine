@@ -1,46 +1,11 @@
 #include "transport/uds_framing.hpp"
 
-#include <cstring>
+#include "transport/wire_bytes.hpp"
 
 namespace transport {
 namespace {
 
 constexpr std::size_t kHeaderSize = 8;  // type + payload_size
-
-void AppendU32(std::vector<std::uint8_t>& out, std::uint32_t v) {
-    out.push_back(static_cast<std::uint8_t>(v));
-    out.push_back(static_cast<std::uint8_t>(v >> 8));
-    out.push_back(static_cast<std::uint8_t>(v >> 16));
-    out.push_back(static_cast<std::uint8_t>(v >> 24));
-}
-
-[[nodiscard]] bool ReadU32(const std::uint8_t*& p, const std::uint8_t* end, std::uint32_t& v) {
-    if (static_cast<std::size_t>(end - p) < 4) {
-        return false;
-    }
-    v = static_cast<std::uint32_t>(p[0]) | (static_cast<std::uint32_t>(p[1]) << 8) |
-        (static_cast<std::uint32_t>(p[2]) << 16) | (static_cast<std::uint32_t>(p[3]) << 24);
-    p += 4;
-    return true;
-}
-
-void AppendString(std::vector<std::uint8_t>& out, const std::string& s) {
-    AppendU32(out, static_cast<std::uint32_t>(s.size()));
-    out.insert(out.end(), s.begin(), s.end());
-}
-
-[[nodiscard]] bool ReadString(const std::uint8_t*& p, const std::uint8_t* end, std::string& s) {
-    std::uint32_t n = 0;
-    if (!ReadU32(p, end, n)) {
-        return false;
-    }
-    if (static_cast<std::size_t>(end - p) < n) {
-        return false;
-    }
-    s.assign(reinterpret_cast<const char*>(p), n);
-    p += n;
-    return true;
-}
 
 }  // namespace
 
@@ -77,14 +42,13 @@ bool DecodeCreateAck(const std::uint8_t* data, std::size_t size, CreateAck& out)
     const std::uint8_t* end = data + size;
     CreateAck tmp;
     std::uint32_t reason = 0;
-    std::uint8_t status = 0;
     if (!ReadString(p, end, tmp.population_id)) {
         return false;
     }
     if (p >= end) {
         return false;
     }
-    status = *p++;
+    const std::uint8_t status = *p++;
     if (!ReadU32(p, end, reason) || !ReadString(p, end, tmp.message) ||
         !ReadString(p, end, tmp.out_queue) || !ReadString(p, end, tmp.in_queue) || p != end) {
         return false;

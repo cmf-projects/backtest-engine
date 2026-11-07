@@ -18,11 +18,12 @@
 namespace transport {
 
 inline constexpr std::size_t kQueueCapacity = 1024;
+// Bytes per ring slot body; logical bus messages may span many slots.
+inline constexpr std::size_t kQueuePayloadBytes = 2040;
 
-// Placeholder payload until Tick/Order framing exists on the rings.
 struct QueueMessage {
     std::uint32_t size = 0;
-    std::uint8_t bytes[248]{};
+    std::uint8_t bytes[kQueuePayloadBytes]{};
 };
 
 static_assert(std::is_trivially_copyable_v<QueueMessage>);

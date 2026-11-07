@@ -203,17 +203,31 @@ UDS **не** несёт Tick/Orders. In-process API **пока не делаем
 | --- | --- | --- | --- |
 | **Create reject** | квота / нельзя поднять SPSC / битый create | **только UDS** | очередей нет |
 | **Fatal run** | `OpenAck` ERROR, protocol `Error`, авария venue | SPSC `Error` (best-effort) + UDS `SessionEnded{fatal}` | стратегия **не** чинит; ждём `Close` или timeout |
+| **SM stall** | оба пишут / никто не читает; прогресса по фазе нет | UDS `SessionEnded{fatal, DRAIN_TIMEOUT}` (+ SPSC Error best-effort) | см. ниже |
 | **Normal end** | лента кончилась | SPSC `End` + UDS `SessionEnded{ok}` | штатный выход |
 | **Client Close** | Engine сам закрыл | UDS `SessionEnded{ok, CLIENT_CLOSE}` | без критики |
 | **Recoverable ack** | плохой `OrderBatch`, retry без сноса | `OrdersAck` ERROR | **позже** (§8.2); сейчас не опираемся |
 
+**State machine и «лок» на тике.** В норме фазы чередуются (venue пишет Tick →
+engine читает → пишет Orders/Advance → …). Если SM нарушена и стороны
+**встали в лок** (оба пытаются писать / никто не читает, очередь не двигается,
+фаза не меняется) — это fatal, не busy-wait forever:
+
+1. Ждём **`drain_timeout`** (default **60s**, venue config) **без прогресса**
+   (нет успешного read/write по ожидаемой фазе, нет Advance/Close).
+2. По таймауту: venue аварийно завершает **эту** pop — кратко в
+   `SessionEnded{fatal, DRAIN_TIMEOUT, message}` по **UDS** (крит. диагноз
+   обязателен), SPSC Error best-effort если ещё можно.
+3. Снос только пары SPSC этой pop; главный UDS жив.
+
+При соблюдении SM mid-send большого Tick в пустое кольцо не должен упираться
+в «полную очередь из‑за отставания»; stall — симптом сломанной фазы / зависания.
+
 **Fatal: ожидаем `Close` от Engine.** Стратегия читает Error из SPSC → шлёт
 `Close` (подтверждение «увидели, гасим»). Venue после `Close` → teardown.
 
-**Если `Close` не пришёл за `drain_timeout` (default 60s):** venue **сам**
-аварийно завершает **эту** популяцию: кратко пишет в `SessionEnded`, *что*
-сломалось (`reason_code` + короткий `message`), сносит **её** SPSC.
-Главный UDS не закрываем. Без timeout зависший клиент держит квоту вечно.
+**Если `Close` не пришёл за `drain_timeout`:** тот же аварийный путь — критический
+`SessionEnded` по UDS + снос SPSC этой pop.
 
 **Почему ещё и UDS.** SPSC может быть полной / engine не в цикле — Error в
 очереди best-effort. `SessionEnded` на сокете — гарантированный итог; в
@@ -241,7 +255,7 @@ UDS **не** несёт Tick/Orders. In-process API **пока не делаем
 **Create reject** — ответ на UDS, без SPSC; UDS жив.
 
 **Не делаем сейчас:** mid-run repair стратегии; recoverable `OrdersAck` как
-основной путь (заложим wire позже); хардкод 60s без конфига.
+основной путь (заложим wire позже); busy-spin без `drain_timeout` при SM stall.
 
 #### State machine (venue, обязателен)
 
@@ -482,7 +496,7 @@ shutdown only. In-process API не в P0. **gRPC не входит в план.*
 | Лента | SnapshotFloor + BookDelta window |
 | Кто двигает время | Trading Engine (pull Advance) |
 | Шаг | Каждый тик, со стримом динамики |
-| Транспорт | UDS: create + SessionEnded; тики по 2×SPSC; fatal → Error → ждать Close иначе timeout+краткий диагноз; recoverable OrdersAck — позже |
+| Транспорт | UDS create + SessionEnded; тики по 2×SPSC; SM stall / нет Close → drain_timeout 60s → SessionEnded{fatal} по UDS; recoverable OrdersAck — позже |
 | `tape_stride` | Склейка N событий файла в один Tick; P0 = 1; не путать с price `tick_size` |
 | Старт ленты | Всегда первое событие файла; mid-file seek нет |
 | View на wire | books/overlays keyed by `component_id` + trades |
