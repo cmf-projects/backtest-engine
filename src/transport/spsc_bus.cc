@@ -47,6 +47,9 @@ bool SpscBus::TrySend(BusMsgType type, const std::vector<std::uint8_t>& payload)
     if (queue_ == nullptr) {
         return false;
     }
+    if (type == BusMsgType::Unspecified) {
+        return false;
+    }
     if (payload.size() > kMaxLogicalBusBytes) {
         return false;
     }
@@ -58,7 +61,6 @@ bool SpscBus::TrySend(BusMsgType type, const std::vector<std::uint8_t>& payload)
     }
 
     std::uint32_t offset = 0;
-    bool sent_any = false;
     while (offset < total) {
         const std::uint32_t remaining = total - offset;
         const std::uint32_t chunk =
@@ -74,35 +76,28 @@ bool SpscBus::TrySend(BusMsgType type, const std::vector<std::uint8_t>& payload)
         }
 
         if (!PushSlot(type, flags, total, offset, payload.data() + offset, chunk)) {
-            // Under a correct pull SM the out ring is empty while we send one
-            // Tick — mid-fail means ring already full / message too wide for
-            // free slots (or SM stall). Session layer should hit drain_timeout
-            // and SessionEnded{fatal} on UDS; Abort only drops a partial assemble.
-            if (sent_any) {
-                (void)PushSlot(type, static_cast<std::uint8_t>(kBusFlagAbort | kBusFlagLast), 0, 0,
-                               nullptr, 0);
-            }
+            // Ring full / stall: no Abort (won't fit either). Session → drain_timeout
+            // + SessionEnded{fatal}. Partial fragments stay until pop teardown.
             return false;
         }
-        sent_any = true;
         offset += chunk;
     }
     return true;
 }
 
-bool SpscBus::TryRecv(BusMsgType& type, std::vector<std::uint8_t>& payload) {
+BusRecvResult SpscBus::TryRecv(BusMsgType& type, std::vector<std::uint8_t>& payload) {
     if (queue_ == nullptr) {
-        return false;
+        return BusRecvResult::Empty;
     }
 
     while (true) {
         QueueMessage slot{};
         if (!queue_->TryPop(slot)) {
-            return false;
+            return BusRecvResult::Empty;
         }
+
         if (slot.size < kBusSlotHeaderBytes || slot.size > kQueuePayloadBytes) {
-            ResetReassembly();
-            continue;
+            return FailProtocol();
         }
 
         const auto msg_type = static_cast<BusMsgType>(ReadU32At(slot.bytes + 0));
@@ -112,19 +107,12 @@ bool SpscBus::TryRecv(BusMsgType& type, std::vector<std::uint8_t>& payload) {
         const std::uint32_t chunk = ReadU32At(slot.bytes + 16);
 
         if (kBusSlotHeaderBytes + chunk != slot.size) {
-            ResetReassembly();
-            continue;
-        }
-
-        if (flags & kBusFlagAbort) {
-            ResetReassembly();
-            continue;
+            return FailProtocol();
         }
 
         if (flags & kBusFlagFirst) {
             if (total > kMaxLogicalBusBytes) {
-                ResetReassembly();
-                continue;
+                return FailProtocol();
             }
             assembling_ = true;
             asm_type_ = msg_type;
@@ -132,13 +120,11 @@ bool SpscBus::TryRecv(BusMsgType& type, std::vector<std::uint8_t>& payload) {
             asm_buf_.clear();
             asm_buf_.reserve(total);
         } else if (!assembling_ || msg_type != asm_type_ || total != asm_total_) {
-            ResetReassembly();
-            continue;
+            return FailProtocol();
         }
 
         if (offset != asm_buf_.size() || offset + chunk > asm_total_) {
-            ResetReassembly();
-            continue;
+            return FailProtocol();
         }
 
         if (chunk != 0) {
@@ -148,15 +134,14 @@ bool SpscBus::TryRecv(BusMsgType& type, std::vector<std::uint8_t>& payload) {
 
         if (flags & kBusFlagLast) {
             if (asm_buf_.size() != asm_total_) {
-                ResetReassembly();
-                continue;
+                return FailProtocol();
             }
             type = asm_type_;
             payload = std::move(asm_buf_);
             ResetReassembly();
-            return true;
+            return BusRecvResult::Message;
         }
-        // Need more fragments; keep assembling_ and pull next slot if available.
+        // Need more fragments; pull next slot if available.
     }
 }
 

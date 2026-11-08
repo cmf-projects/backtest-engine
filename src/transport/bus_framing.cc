@@ -83,21 +83,13 @@ bool DecodeBusEnd(const std::uint8_t* data, std::size_t size) {
     return size == 0;
 }
 
-std::vector<std::uint8_t> EncodeBusClose(const BusClose& msg) {
-    std::vector<std::uint8_t> out;
-    AppendString(out, msg.population_id);
-    return out;
+std::vector<std::uint8_t> EncodeBusClose() {
+    return {};
 }
 
-bool DecodeBusClose(const std::uint8_t* data, std::size_t size, BusClose& out) {
-    const std::uint8_t* p = data;
-    const std::uint8_t* end = data + size;
-    BusClose tmp;
-    if (!ReadString(p, end, tmp.population_id) || p != end) {
-        return false;
-    }
-    out = std::move(tmp);
-    return true;
+bool DecodeBusClose(const std::uint8_t* data, std::size_t size) {
+    (void)data;
+    return size == 0;
 }
 
 std::vector<std::uint8_t> EncodeBusError(const BusError& msg) {

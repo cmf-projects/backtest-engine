@@ -7,7 +7,6 @@
 #include <numeric>
 
 using transport::AckStatus;
-using transport::BusClose;
 using transport::BusError;
 using transport::BusMsgType;
 using transport::BusOpen;
@@ -30,6 +29,7 @@ using transport::EncodeBusTick;
 using transport::ErrorCode;
 using transport::MakeBusOpenOk;
 using transport::QueueRegistry;
+using transport::BusRecvResult;
 using transport::SpscBus;
 using transport::kMaxBusChunkBytes;
 using transport::kMaxLogicalBusBytes;
@@ -48,7 +48,7 @@ TEST(SpscBus, OpenAckTickAdvanceEndRoundTrip) {
     {
         BusMsgType type{};
         std::vector<std::uint8_t> payload;
-        ASSERT_TRUE(in.TryRecv(type, payload));
+        ASSERT_EQ(in.TryRecv(type, payload), BusRecvResult::Message);
         EXPECT_EQ(type, BusMsgType::Open);
         BusOpen open;
         ASSERT_TRUE(DecodeBusOpen(payload.data(), payload.size(), open));
@@ -61,13 +61,13 @@ TEST(SpscBus, OpenAckTickAdvanceEndRoundTrip) {
     {
         BusMsgType type{};
         std::vector<std::uint8_t> payload;
-        ASSERT_TRUE(out.TryRecv(type, payload));
+        ASSERT_EQ(out.TryRecv(type, payload), BusRecvResult::Message);
         EXPECT_EQ(type, BusMsgType::OpenAck);
         BusOpenAck open_ack;
         ASSERT_TRUE(DecodeBusOpenAck(payload.data(), payload.size(), open_ack));
         EXPECT_EQ(open_ack.status, AckStatus::Ok);
 
-        ASSERT_TRUE(out.TryRecv(type, payload));
+        ASSERT_EQ(out.TryRecv(type, payload), BusRecvResult::Message);
         EXPECT_EQ(type, BusMsgType::Tick);
         BusTick tick;
         ASSERT_TRUE(DecodeBusTick(payload.data(), payload.size(), tick));
@@ -78,7 +78,7 @@ TEST(SpscBus, OpenAckTickAdvanceEndRoundTrip) {
     {
         BusMsgType type{};
         std::vector<std::uint8_t> payload;
-        ASSERT_TRUE(in.TryRecv(type, payload));
+        ASSERT_EQ(in.TryRecv(type, payload), BusRecvResult::Message);
         EXPECT_EQ(type, BusMsgType::Advance);
         EXPECT_TRUE(DecodeBusAdvance(payload.data(), payload.size()));
     }
@@ -87,7 +87,7 @@ TEST(SpscBus, OpenAckTickAdvanceEndRoundTrip) {
     {
         BusMsgType type{};
         std::vector<std::uint8_t> payload;
-        ASSERT_TRUE(out.TryRecv(type, payload));
+        ASSERT_EQ(out.TryRecv(type, payload), BusRecvResult::Message);
         EXPECT_EQ(type, BusMsgType::End);
         EXPECT_TRUE(DecodeBusEnd(payload.data(), payload.size()));
     }
@@ -104,15 +104,16 @@ TEST(SpscBus, ErrorAndClose) {
 
     BusMsgType type{};
     std::vector<std::uint8_t> payload;
-    ASSERT_TRUE(out.TryRecv(type, payload));
+    ASSERT_EQ(out.TryRecv(type, payload), BusRecvResult::Message);
     EXPECT_EQ(type, BusMsgType::Error);
     BusError got;
     ASSERT_TRUE(DecodeBusError(payload.data(), payload.size(), got));
     EXPECT_EQ(got.code, ErrorCode::Internal);
 
-    ASSERT_TRUE(in.TrySend(BusMsgType::Close, EncodeBusClose(BusClose{.population_id = "pop-2"})));
-    ASSERT_TRUE(in.TryRecv(type, payload));
+    ASSERT_TRUE(in.TrySend(BusMsgType::Close, EncodeBusClose()));
+    ASSERT_EQ(in.TryRecv(type, payload), BusRecvResult::Message);
     EXPECT_EQ(type, BusMsgType::Close);
+    EXPECT_TRUE(DecodeBusClose(payload.data(), payload.size()));
 }
 
 TEST(SpscBus, MultiSlotRoundTrip) {
@@ -128,9 +129,29 @@ TEST(SpscBus, MultiSlotRoundTrip) {
 
     BusMsgType type{};
     std::vector<std::uint8_t> payload;
-    ASSERT_TRUE(out.TryRecv(type, payload));
+    ASSERT_EQ(out.TryRecv(type, payload), BusRecvResult::Message);
     EXPECT_EQ(type, BusMsgType::Tick);
     EXPECT_EQ(payload, big);
+}
+
+TEST(SpscBus, TruncatedLastIsProtocolError) {
+    QueueRegistry reg;
+    auto created = reg.Create("pop-5");
+    auto* q = reg.FindOut(created.out_queue);
+    ASSERT_NE(q, nullptr);
+
+    // Hand-craft First|Last that claims total=10 but carries 0 payload bytes.
+    transport::QueueMessage slot{};
+    slot.bytes[0] = static_cast<std::uint8_t>(BusMsgType::Tick);
+    slot.bytes[4] = static_cast<std::uint8_t>(transport::kBusFlagFirst | transport::kBusFlagLast);
+    slot.bytes[8] = 10;  // total LE
+    slot.size = transport::kBusSlotHeaderBytes;
+    ASSERT_TRUE(q->TryPush(slot));
+
+    SpscBus out(q);
+    BusMsgType type{};
+    std::vector<std::uint8_t> payload;
+    EXPECT_EQ(out.TryRecv(type, payload), BusRecvResult::ProtocolError);
 }
 
 TEST(SpscBus, SoftCapRejected) {

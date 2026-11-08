@@ -223,31 +223,38 @@ engine читает → пишет Orders/Advance → …). Если SM нару
 При соблюдении SM mid-send большого Tick в пустое кольцо не должен упираться
 в «полную очередь из‑за отставания»; stall — симптом сломанной фазы / зависания.
 
-**Fatal: ожидаем `Close` от Engine.** Стратегия читает Error из SPSC → шлёт
-`Close` (подтверждение «увидели, гасим»). Venue после `Close` → teardown.
+**Fatal: ожидаем `Close` от Engine.** Стратегия читает Error / SessionEnded →
+шлёт `Close`. Venue после `Close` → teardown.
 
-**Если `Close` не пришёл за `drain_timeout`:** тот же аварийный путь — критический
-`SessionEnded` по UDS + снос SPSC этой pop.
+**Обязательный drain, пока ждём Close.** Если venue **перестанет читать** in,
+Engine упрётся в полный SPSC и **не сможет** записать `Close` → ложный дедлок
+и только timeout. Поэтому после решения fatal:
+
+- venue **продолжает `TryPop` / `TryRecv` с in** до Close или timeout;
+- всё, кроме `Close`, **выбрасывает** (не обрабатывает как живой протокол);
+- `Close` → нормальный teardown этой pop.
+
+Зеркально Engine при своём fatal: пока пишет Close / гасит pop — **дочитывает
+out** (Error, хвосты Tick), иначе venue не сможет дописать Session-path в out.
+
+**Если `Close` не пришёл за `drain_timeout`:** аварийный снос SPSC этой pop;
+диагноз уже в `SessionEnded` на UDS.
 
 **Почему ещё и UDS.** SPSC может быть полной / engine не в цикле — Error в
-очереди best-effort. `SessionEnded` на сокете — гарантированный итог; в
-аварийном timeout-пути это **единственное**, что Engine потом увидит при
-разборе (краткий диагноз обязателен).
+очереди best-effort. `SessionEnded` на сокете — гарантированный итог.
 
 **Порядок fatal teardown (venue):**
 
 ```text
-1. SPSC out ← Error | OpenAck ERROR   (best-effort, если out полна — см. ниже)
-2. in: принимать только Close; остальное игнор / no-op
-3. UDS ← SessionEnded{fatal, reason_code, message}   # кратко: что не так
-4. Ждать Close от Engine (по SPSC этой pop)
-   — пришёл → teardown этой pop
-   — drain_timeout → аварийный teardown сами (диагноз уже в SessionEnded)
-5. Снести **только** SPSC этой pop; UDS жив
+1. SPSC out ← Error | OpenAck ERROR   (best-effort)
+2. UDS ← SessionEnded{fatal, reason_code, message}
+3. Пока !Close && !timeout:
+     drain in (pop/recv); Close → break; иное → discard
+4. Снести **только** SPSC этой pop; UDS жив
 ```
 
-**Normal end:** SPSC `End` → `SessionEnded{ok, population_id}` → Close \| timeout
-→ снос SPSC этой pop.
+**Normal end:** SPSC `End` → `SessionEnded{ok, population_id}` → тот же
+**drain in до Close** \| timeout → снос SPSC этой pop.
 
 Если out полна на шаге 1 — не крутиться вечно (reserved slot / drop-oldest);
 истина для диагноза — в `SessionEnded`.
@@ -404,10 +411,9 @@ ack / partial / fill / cancel / reject — по нему. `Cancel` несёт **
 новый ордер — только с новым id. Уникальность в пределах слота — обязанность
 Engine; venue reject’ит дубликат живого id.
 
-**Закрыто по lifecycle (§5.5):** **один** главный UDS на Engine↔Venue (full duplex,
-мультиплекс pop по `population_id`); create + `SessionEnded` на нём; fatal →
-Error в SPSC → ждать **`Close`** иначе timeout + краткий `message`; конец pop
-сносит только её SPSC, не UDS.
+**Закрыто по lifecycle (§5.5):** **один** главный UDS; fatal → Error + SessionEnded
+→ **drain in до Close** (не стопать read — иначе дедлок на полной очереди) иначе
+timeout; конец pop сносит только её SPSC.
 
 **Ещё открыто / позже:**
 - **recoverable `OrdersAck`** — retry batch без сноса прогона (wire можно

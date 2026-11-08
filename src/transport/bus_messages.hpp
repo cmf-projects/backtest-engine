@@ -11,6 +11,7 @@
 namespace transport {
 
 enum class BusMsgType : std::uint32_t {
+    Unspecified = 0, // idle / invalid; never on the wire as a real message
     Open = 1,        // engine → venue (in)
     OpenAck = 2,     // venue → engine (out)
     Tick = 3,        // venue → engine (out) — body grows later
@@ -43,9 +44,7 @@ struct BusAdvance {};
 
 struct BusEnd {};
 
-struct BusClose {
-    std::string population_id;
-};
+struct BusClose {};  // empty; population is implied by the SPSC pair
 
 struct BusError {
     ErrorCode code = ErrorCode::Unspecified;

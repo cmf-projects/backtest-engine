@@ -273,7 +273,8 @@ CMF жёстко: 1 venue process ↔ 1 engine, два TCP, один `HELLO` / `
 
 - Один управляющий сокет; не accept-per-pop и не второй fd «для ответа».
 - Независимые pop = разные SPSC + `population_id` на общем UDS.
-- Fatal/normal: SessionEnded на UDS → Close \| timeout → снос **только** SPSC pop.
+- Fatal/normal: SessionEnded на UDS → **drain in до Close** \| timeout → снос SPSC pop
+  (без drain Engine упрётся в полный in и не запишет Close).
 - Recoverable `OrdersAck` — позже.
 - CMF TCP — адаптер «1 population, 1 slot» / smoke.
 

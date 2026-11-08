@@ -22,8 +22,8 @@ namespace transport {
 [[nodiscard]] std::vector<std::uint8_t> EncodeBusEnd();
 [[nodiscard]] bool DecodeBusEnd(const std::uint8_t* data, std::size_t size);
 
-[[nodiscard]] std::vector<std::uint8_t> EncodeBusClose(const BusClose& msg);
-[[nodiscard]] bool DecodeBusClose(const std::uint8_t* data, std::size_t size, BusClose& out);
+[[nodiscard]] std::vector<std::uint8_t> EncodeBusClose();
+[[nodiscard]] bool DecodeBusClose(const std::uint8_t* data, std::size_t size);
 
 [[nodiscard]] std::vector<std::uint8_t> EncodeBusError(const BusError& msg);
 [[nodiscard]] bool DecodeBusError(const std::uint8_t* data, std::size_t size, BusError& out);
