@@ -114,7 +114,8 @@ add_library(transport_lib
   src/transport/uds_framing.cc
   src/transport/uds_control.cc
   src/transport/bus_framing.cc
-  src/transport/spsc_bus.cc)
+  src/transport/spsc_bus.cc
+  src/transport/population_session.cc)
 add_library(cmf::transport ALIAS transport_lib)
 
 target_include_directories(transport_lib
@@ -164,7 +165,8 @@ if(CMF_BUILD_TESTS)
     tests/transport/queue_registry_test.cc
     tests/transport/uds_control_test.cc
     tests/transport/finish_session_test.cc
-    tests/transport/spsc_bus_test.cc)
+    tests/transport/spsc_bus_test.cc
+    tests/transport/population_session_test.cc)
   target_link_libraries(transport_tests PRIVATE
     cmf::transport
     GTest::gtest_main)

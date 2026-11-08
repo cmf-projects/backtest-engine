@@ -16,6 +16,13 @@ namespace transport {
 [[nodiscard]] std::vector<std::uint8_t> EncodeBusTick(const BusTick& msg);
 [[nodiscard]] bool DecodeBusTick(const std::uint8_t* data, std::size_t size, BusTick& out);
 
+[[nodiscard]] std::vector<std::uint8_t> EncodeBusOrderBatch();
+[[nodiscard]] bool DecodeBusOrderBatch(const std::uint8_t* data, std::size_t size);
+
+[[nodiscard]] std::vector<std::uint8_t> EncodeBusOrdersAck(const BusOrdersAck& msg);
+[[nodiscard]] bool DecodeBusOrdersAck(const std::uint8_t* data, std::size_t size,
+                                      BusOrdersAck& out);
+
 [[nodiscard]] std::vector<std::uint8_t> EncodeBusAdvance();
 [[nodiscard]] bool DecodeBusAdvance(const std::uint8_t* data, std::size_t size);
 

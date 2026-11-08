@@ -1,4 +1,7 @@
+#include "transport/bus_framing.hpp"
+#include "transport/bus_messages.hpp"
 #include "transport/queue_registry.hpp"
+#include "transport/spsc_bus.hpp"
 #include "transport/uds_control.hpp"
 
 #include <gtest/gtest.h>
@@ -9,8 +12,9 @@
 #include <unistd.h>
 
 using transport::AckStatus;
-using transport::Close;
+using transport::BusMsgType;
 using transport::CreateQueues;
+using transport::EncodeBusClose;
 using transport::ErrorCode;
 using transport::FinishSession;
 using transport::FinishSessionStatus;
@@ -18,9 +22,9 @@ using transport::MakeSessionEndedFatal;
 using transport::MakeSessionEndedOk;
 using transport::QueueRegistry;
 using transport::RequestCreateQueues;
-using transport::SendClose;
 using transport::ServeCreateQueues;
 using transport::SessionEnded;
+using transport::SpscBus;
 using transport::UdsConn;
 using transport::UdsConnect;
 using transport::UdsListener;
@@ -65,14 +69,15 @@ TEST(FinishSession, CloseThenDestroy) {
             return;
         }
         UdsConn conn(raw);
-        if (RequestCreateQueues(conn, CreateQueues{.population_id = "pop-1"}).status !=
-            AckStatus::Ok) {
+        const auto ack = RequestCreateQueues(conn, CreateQueues{.population_id = "pop-1"});
+        if (ack.status != AckStatus::Ok) {
             return;
         }
         if (!WaitSessionEnded(conn, seen)) {
             return;
         }
-        (void)SendClose(conn, Close{.population_id = "pop-1"});
+        SpscBus in(registry.FindIn(ack.in_queue));
+        (void)in.TrySend(BusMsgType::Close, EncodeBusClose());
     });
 
     server.join();
@@ -130,8 +135,7 @@ TEST(FinishSession, TimeoutStillDestroys) {
 }
 
 TEST(FinishSession, CoalescedCreateAckAndSessionEnded) {
-    // Stress the sticky buffer: venue may send SessionEnded before engine
-    // finishes reading CreateAck; both frames can arrive in one recv.
+    // Sticky buffer: SessionEnded may land before CreateAck is fully read.
     const std::string path = TempSockPath();
     auto listener = UdsListener::Bind(path);
     QueueRegistry registry;
@@ -159,16 +163,16 @@ TEST(FinishSession, CoalescedCreateAckAndSessionEnded) {
             return;
         }
         UdsConn conn(raw);
-        // Tiny delay so server can write CreateAck+SessionEnded back-to-back.
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        if (RequestCreateQueues(conn, CreateQueues{.population_id = "pop-3"}).status !=
-            AckStatus::Ok) {
+        const auto ack = RequestCreateQueues(conn, CreateQueues{.population_id = "pop-3"});
+        if (ack.status != AckStatus::Ok) {
             return;
         }
         if (!WaitSessionEnded(conn, seen)) {
             return;
         }
-        (void)SendClose(conn, Close{.population_id = "pop-3"});
+        SpscBus in(registry.FindIn(ack.in_queue));
+        (void)in.TrySend(BusMsgType::Close, EncodeBusClose());
     });
 
     server.join();
@@ -176,5 +180,49 @@ TEST(FinishSession, CoalescedCreateAckAndSessionEnded) {
 
     EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
     EXPECT_EQ(seen.population_id, "pop-3");
+    EXPECT_EQ(registry.size(), 0u);
+}
+
+TEST(FinishSession, AlreadySeenCloseSkipsWait) {
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
+
+    FinishSessionStatus status = FinishSessionStatus::Failed;
+    SessionEnded seen;
+
+    std::thread server([&] {
+        const int raw = listener.Accept();
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
+            return;
+        }
+        status = FinishSession(conn, registry,
+                               MakeSessionEndedOk("pop-4", ErrorCode::ClientClose, "early close"),
+                               /*drain_timeout_ms=*/2'000,
+                               /*close_already_seen=*/true);
+    });
+
+    std::thread client([&] {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (RequestCreateQueues(conn, CreateQueues{.population_id = "pop-4"}).status !=
+            AckStatus::Ok) {
+            return;
+        }
+        (void)WaitSessionEnded(conn, seen);
+    });
+
+    server.join();
+    client.join();
+
+    EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
+    EXPECT_EQ(seen.population_id, "pop-4");
     EXPECT_EQ(registry.size(), 0u);
 }

@@ -1,13 +1,19 @@
 #include "transport/uds_control.hpp"
 
+#include "transport/bus_framing.hpp"
+#include "transport/bus_messages.hpp"
+#include "transport/spsc_bus.hpp"
+
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
 
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <stdexcept>
+#include <thread>
 
 namespace transport {
 namespace {
@@ -258,41 +264,50 @@ CreateAck RequestCreateQueues(UdsConn& conn, const CreateQueues& req) {
 }
 
 FinishSessionStatus FinishSession(UdsConn& conn, QueueRegistry& registry, const SessionEnded& ended,
-                                  std::uint32_t drain_timeout_ms) {
-    const auto destroy = [&] {
-        if (!ended.population_id.empty()) {
-            (void)registry.Destroy(ended.population_id);
-        }
-    };
-
+                                  std::uint32_t drain_timeout_ms, bool close_already_seen) {
     if (!conn.WriteFrame(ControlMsgType::SessionEnded, EncodeSessionEnded(ended))) {
-        destroy();
+        (void)registry.Destroy(ended.population_id);
         return FinishSessionStatus::Failed;
     }
 
+    if (close_already_seen) {
+        (void)registry.Destroy(ended.population_id);
+        return FinishSessionStatus::ClosedByClient;
+    }
+
+    QueuePair* pair = registry.FindByPopulation(ended.population_id);
+    if (pair == nullptr) {
+        (void)registry.Destroy(ended.population_id);
+        return FinishSessionStatus::Failed;
+    }
+
+    SpscBus in_bus(&pair->in);
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::milliseconds(drain_timeout_ms);
 
-    ParsedFrame frame;
-    const int got = conn.ReadFrameDeadline(frame, deadline);
-    if (got == 0) {
-        destroy();
-        return FinishSessionStatus::TimedOut;
-    }
-    if (got < 0 || frame.type != ControlMsgType::Close) {
-        destroy();
-        return FinishSessionStatus::Failed;
+    while (std::chrono::steady_clock::now() < deadline) {
+        BusMsgType type{};
+        std::vector<std::uint8_t> payload;
+        switch (in_bus.TryRecv(type, payload)) {
+            case BusRecvResult::Empty:
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                break;
+            case BusRecvResult::ProtocolError:
+                // Keep draining; corrupt fragments must not block Close.
+                break;
+            case BusRecvResult::Message:
+                if (type == BusMsgType::Close &&
+                    DecodeBusClose(payload.data(), payload.size())) {
+                    (void)registry.Destroy(ended.population_id);
+                    return FinishSessionStatus::ClosedByClient;
+                }
+                // Discard anything else so Engine can push Close into a free ring.
+                break;
+        }
     }
 
-    Close close;
-    if (!DecodeClose(frame.payload.data(), frame.payload.size(), close) ||
-        close.population_id != ended.population_id) {
-        destroy();
-        return FinishSessionStatus::Failed;
-    }
-
-    destroy();
-    return FinishSessionStatus::ClosedByClient;
+    (void)registry.Destroy(ended.population_id);
+    return FinishSessionStatus::TimedOut;
 }
 
 bool WaitSessionEnded(UdsConn& conn, SessionEnded& out) {
@@ -301,10 +316,6 @@ bool WaitSessionEnded(UdsConn& conn, SessionEnded& out) {
         return false;
     }
     return DecodeSessionEnded(frame.payload.data(), frame.payload.size(), out);
-}
-
-bool SendClose(UdsConn& conn, const Close& close) {
-    return conn.WriteFrame(ControlMsgType::Close, EncodeClose(close));
 }
 
 }  // namespace transport

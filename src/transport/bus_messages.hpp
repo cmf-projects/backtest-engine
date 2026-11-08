@@ -24,8 +24,10 @@ enum class BusMsgType : std::uint32_t {
 };
 
 // Engine → venue: open population on already-created queues.
+// n_slots = strategy count; fixed for the run; Tick carries that many slot diffs.
 struct BusOpen {
     std::string population_id;
+    std::uint32_t n_slots = 0;
 };
 
 struct BusOpenAck {
@@ -33,11 +35,22 @@ struct BusOpenAck {
     AckStatus status = AckStatus::Error;
     ErrorCode reason_code = ErrorCode::Unspecified;
     std::string message;
+    // Echoed on OK so engine knows how many slot book diffs to expect per Tick.
+    std::uint32_t n_slots = 0;
 };
 
 // Minimal Tick for bus wiring; books/trades come in a later step.
 struct BusTick {
     std::uint64_t pop_ts_ns = 0;
+};
+
+// Stub: empty body. Real orders later.
+struct BusOrderBatch {};
+
+struct BusOrdersAck {
+    AckStatus status = AckStatus::Error;
+    ErrorCode reason_code = ErrorCode::Unspecified;
+    std::string message;
 };
 
 struct BusAdvance {};
@@ -51,10 +64,11 @@ struct BusError {
     std::string message;
 };
 
-[[nodiscard]] inline BusOpenAck MakeBusOpenOk(std::string population_id) {
+[[nodiscard]] inline BusOpenAck MakeBusOpenOk(std::string population_id, std::uint32_t n_slots) {
     BusOpenAck ack;
     ack.population_id = std::move(population_id);
     ack.status = AckStatus::Ok;
+    ack.n_slots = n_slots;
     return ack;
 }
 
@@ -62,6 +76,21 @@ struct BusError {
                                                   std::string message) {
     BusOpenAck ack;
     ack.population_id = std::move(population_id);
+    ack.status = AckStatus::Error;
+    ack.reason_code = code;
+    ack.message = std::move(message);
+    ack.n_slots = 0;
+    return ack;
+}
+
+[[nodiscard]] inline BusOrdersAck MakeOrdersAckOk() {
+    BusOrdersAck ack;
+    ack.status = AckStatus::Ok;
+    return ack;
+}
+
+[[nodiscard]] inline BusOrdersAck MakeOrdersAckReject(ErrorCode code, std::string message) {
+    BusOrdersAck ack;
     ack.status = AckStatus::Error;
     ack.reason_code = code;
     ack.message = std::move(message);
