@@ -126,10 +126,30 @@ target_compile_features(transport_lib PUBLIC cxx_std_20)
 target_link_libraries(transport_lib PUBLIC cmf::population cmf::dataset)
 
 # ---------------------------------------------------------------------------
-# App entrypoint — apps/backtest → binary name `backtest` (engine looks for it)
+# App entrypoints
 # ---------------------------------------------------------------------------
 add_executable(backtest apps/backtest/main.cc)
 target_link_libraries(backtest PRIVATE cmf::venue)
+
+# Population UDS venue (in-process SPSC; shm later). CMF `backtest` untouched.
+add_library(population_venue_lib
+  src/population_venue/config/config.cc
+  src/population_venue/app/app.cc)
+add_library(cmf::population_venue ALIAS population_venue_lib)
+target_include_directories(population_venue_lib
+  PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>")
+target_compile_features(population_venue_lib PUBLIC cxx_std_20)
+target_link_libraries(population_venue_lib
+  PUBLIC cmf::transport
+  PRIVATE tomlplusplus::tomlplusplus)
+
+add_executable(population_venue apps/population_venue/main.cc)
+target_link_libraries(population_venue PRIVATE cmf::population_venue)
+
+# Same-process smoke: UDS create + shared QueueRegistry tick loop.
+add_executable(population_smoke apps/population_smoke/main.cc)
+target_link_libraries(population_smoke PRIVATE cmf::transport)
 
 # ---------------------------------------------------------------------------
 # Tests (GoogleTest) — population + transport
@@ -184,6 +204,9 @@ if(MSVC)
   target_compile_options(transport_lib PRIVATE /W4)
   target_compile_options(venue_lib PRIVATE /W4)
   target_compile_options(backtest PRIVATE /W4)
+  target_compile_options(population_venue_lib PRIVATE /W4)
+  target_compile_options(population_venue PRIVATE /W4)
+  target_compile_options(population_smoke PRIVATE /W4)
   if(CMF_BUILD_TESTS)
     target_compile_options(population_tests PRIVATE /W4)
     target_compile_options(transport_tests PRIVATE /W4)
@@ -194,6 +217,9 @@ else()
   target_compile_options(transport_lib PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(venue_lib PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(backtest PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(population_venue_lib PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(population_venue PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(population_smoke PRIVATE -Wall -Wextra -Wpedantic)
   if(CMF_BUILD_TESTS)
     target_compile_options(population_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(transport_tests PRIVATE -Wall -Wextra -Wpedantic)

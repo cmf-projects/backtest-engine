@@ -42,11 +42,22 @@ make strategy STRATEGY_CONFIG=/path/to/strategy.toml
 CONFIG=/path/to/venue.toml ./build/backtest
 ```
 
+### Population path (UDS + SPSC)
+
+```bash
+make population-smoke   # same-process Open → Tick → Advance → End
+make population         # listen on UDS (default /tmp/cmf-population.sock)
+```
+
+Knobs: `POPULATION_UDS`, `POPULATION_DRAIN_MS`, `CONFIG=apps/population_venue/config.toml`.  
+Open still carries `dataset_path` (JSONL on the venue host). SPSC queues are **in-process** for now (shm later), so a separate engine process can Create/SessionEnded on UDS but the tick loop smoke is `population_smoke`.
+
 ## Configure
 
 | File | Who | Main knobs |
 | --- | --- | --- |
 | `apps/backtest/config.toml` | venue | `host`, `feed_port`, `order_port`, `dataset`, `class_code`, `sec_code`, `tick_size` |
+| `apps/population_venue/config.toml` | population venue | `uds_path`, `drain_timeout_ms` |
 | `scripts/strategy.toml` | stand-in | same host/ports/instrument, plus `lookahead_ns`, `interval_ns`, `qty`, `tif` (0=DAY, 1=IOC, 2=FOK), `max_orders` |
 
 `sec_code` must match the `symbol` field in the JSONL (and stay ≤ 31 characters).
@@ -74,14 +85,17 @@ Point `dataset` in the venue TOML at the resulting `.jsonl`.
 ## Layout
 
 ```
-apps/backtest/     entrypoint + venue config → binary backtest
-include/cmf/       protocol driver (cmf_driver.hpp)
-src/venue/         book, matching, JSONL feed
-src/config/        TOML loader
-scripts/           mbo_to_snapshots.py, simple_strategy.py, strategy.toml
-docs/              TASK, CONTEXT
-data/converted/    sample JSONL (gitignored)
-files/             protocol PDF
+apps/backtest/           CMF venue → binary backtest
+apps/population_venue/  UDS population venue
+apps/population_smoke/  in-process population smoke
+include/cmf/            protocol driver (cmf_driver.hpp)
+src/venue/              CMF book, matching, JSONL feed
+src/population/         population core
+src/transport/          UDS + SPSC bus + session
+src/config/             TOML loader (CMF)
+testdata/population/    sample JSONL for smoke
+scripts/                mbo_to_snapshots.py, simple_strategy.py
+docs/                   TASK, CONTEXT, POPULATION_*
 ```
 
 ## Make targets
@@ -92,6 +106,8 @@ files/             protocol PDF
 | `make venue` | run C++ backtest only |
 | `make strategy` | run Python stand-in only (venue must already listen) |
 | `make run` | venue in background, then strategy |
+| `make population` | run population UDS venue |
+| `make population-smoke` | Open→Tick→Advance→End smoke |
 | `make clean` | remove `build/` |
 | `make help` | list targets |
 

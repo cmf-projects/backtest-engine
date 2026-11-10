@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -43,6 +44,8 @@ private:
 [[nodiscard]] int UdsConnect(const std::string &path);
 
 // Connected UDS with a sticky read buffer (frames may coalesce in one recv).
+// WriteFrame is serialized via write_mu_ so many session threads may share one conn.
+// Non-movable: std::mutex member; pass by reference after construction.
 class UdsConn {
 public:
   explicit UdsConn(int fd) noexcept;
@@ -50,9 +53,8 @@ public:
 
   UdsConn(const UdsConn &) = delete;
   UdsConn &operator=(const UdsConn &) = delete;
-
-  UdsConn(UdsConn &&other) noexcept;
-  UdsConn &operator=(UdsConn &&other) noexcept;
+  UdsConn(UdsConn &&) = delete;
+  UdsConn &operator=(UdsConn &&) = delete;
 
   [[nodiscard]] bool valid() const noexcept { return fd_ >= 0; }
   [[nodiscard]] int fd() const noexcept { return fd_; }
@@ -68,10 +70,10 @@ public:
 private:
   int fd_ = -1;
   std::vector<std::uint8_t> inbuf_;
+  std::mutex write_mu_;
 };
 
-[[nodiscard]] CreateAck ServeCreateQueues(UdsConn &conn,
-                                          QueueRegistry &registry);
+[[nodiscard]] CreateAck ServeCreateQueues(UdsConn &conn, QueueRegistry &registry);
 [[nodiscard]] CreateAck RequestCreateQueues(UdsConn &conn,
                                             const CreateQueues &req);
 

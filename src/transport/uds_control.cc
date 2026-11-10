@@ -150,26 +150,12 @@ UdsConn::~UdsConn() {
     fd_ = -1;
 }
 
-UdsConn::UdsConn(UdsConn&& other) noexcept
-    : fd_(other.fd_), inbuf_(std::move(other.inbuf_)) {
-    other.fd_ = -1;
-}
-
-UdsConn& UdsConn::operator=(UdsConn&& other) noexcept {
-    if (this != &other) {
-        CloseFd(fd_);
-        fd_ = other.fd_;
-        inbuf_ = std::move(other.inbuf_);
-        other.fd_ = -1;
-    }
-    return *this;
-}
-
 bool UdsConn::WriteFrame(ControlMsgType type, const std::vector<std::uint8_t>& payload) {
     if (fd_ < 0) {
         return false;
     }
     const auto bytes = Frame(type, payload);
+    std::lock_guard<std::mutex> lock(write_mu_);
     return WriteAll(fd_, bytes.data(), bytes.size());
 }
 
