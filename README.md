@@ -21,14 +21,16 @@ make population-smoke   # same-process Open → Tick → Advance → End
 make population         # listen on UDS (default /tmp/cmf-population.sock)
 ```
 
-Knobs: `POPULATION_UDS`, `POPULATION_DRAIN_MS`, `CONFIG=apps/population_venue/config.toml`.  
+Knobs: `POPULATION_UDS`, `POPULATION_DRAIN_MS`, `CONFIG=options/population_venue.toml`.  
 Open still carries `dataset_path` (JSONL on the venue host). SPSC queues are **in-process** for now (shm later).
 
 ## Configure
 
+TOML configs for entrypoints live under `options/`:
+
 | File | Who | Main knobs |
 | --- | --- | --- |
-| `apps/population_venue/config.toml` | population venue | `uds_path`, `drain_timeout_ms` |
+| `options/population_venue.toml` | `population_venue` | `uds_path`, `drain_timeout_ms` |
 
 ## Dataset
 
@@ -53,7 +55,8 @@ python3 scripts/mbo_to_snapshots.py data/dataset/XEUR-….zip \
 ```
 apps/population_venue/   UDS population venue → binary population_venue
 apps/population_smoke/   in-process population smoke
-src/population_venue/    config + App::Run
+options/                 TOML configs per entrypoint
+src/population_venue/    config parse + App::Run
 src/population/          population core
 src/transport/           UDS + SPSC bus + session
 src/dataset/             JSONL → Tape

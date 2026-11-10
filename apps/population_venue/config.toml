@@ -1,4 +1,0 @@
-# Population venue (UDS + SPSC). Override path: CONFIG=... or POPULATION_UDS=...
-
-uds_path = "/tmp/cmf-population.sock"
-drain_timeout_ms = 60000

@@ -12,6 +12,7 @@ struct Config {
     std::uint32_t drain_timeout_ms = transport::kDefaultDrainTimeoutMs;
 };
 
+// Default TOML: options/population_venue.toml.
 // ENV: CONFIG, POPULATION_UDS, POPULATION_DRAIN_MS; optional argv[1] = uds_path.
 [[nodiscard]] Config LoadConfig(int argc, char** argv);
 

@@ -1,0 +1,5 @@
+# Population venue (UDS + SPSC).
+# Override: CONFIG=options/....toml or POPULATION_UDS=... / POPULATION_DRAIN_MS=...
+
+uds_path = "/tmp/cmf-population.sock"
+drain_timeout_ms = 60000

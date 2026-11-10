@@ -9,7 +9,7 @@
 BUILD_DIR        ?= build
 POPULATION_VENUE := $(BUILD_DIR)/population_venue
 POPULATION_SMOKE := $(BUILD_DIR)/population_smoke
-POPULATION_CONFIG ?= apps/population_venue/config.toml
+POPULATION_CONFIG ?= options/population_venue.toml
 POPULATION_UDS   ?= /tmp/cmf-population.sock
 POPULATION_DATASET ?= testdata/population/smoke.jsonl
 CMAKE_FLAGS      ?= -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON

@@ -23,7 +23,7 @@ Config LoadConfig(int argc, char** argv) {
         cfg.drain_timeout_ms = static_cast<std::uint32_t>(std::strtoul(drain, nullptr, 10));
     }
 
-    const std::string config_path = EnvOr("CONFIG", "apps/population_venue/config.toml");
+    const std::string config_path = EnvOr("CONFIG", "options/population_venue.toml");
     try {
         const toml::table table = toml::parse_file(config_path);
         if (const auto* uds = table["uds_path"].as_string()) {

@@ -41,6 +41,7 @@ Pull model: venue advances `pop_ts` only on Engine **Advance**.
 ```
 apps/population_venue/      main → LoadConfig + App::Run
 apps/population_smoke/      in-process Open→Tick→Advance→End
+options/                    TOML per entrypoint (e.g. population_venue.toml)
 src/population_venue/       config/ + app/ (listen, spawn sessions)
 src/transport/              UDS, QueueRegistry, SPSC bus, PopulationSession
 src/population/             core (P0: 1 component; target: ≤3 legs)
@@ -51,7 +52,8 @@ docs/                       TZ, IMPL, PLAN, GLOSSARY, this file
 third_party/ipc.h           unused reference SPMC (own SPSC already)
 ```
 
-Config: `apps/population_venue/config.toml` (`uds_path`, `drain_timeout_ms`); override via `CONFIG` / `POPULATION_UDS` / `POPULATION_DRAIN_MS`.
+Configs: `options/*.toml` per entrypoint (default `options/population_venue.toml`).  
+Override via `CONFIG` / `POPULATION_UDS` / `POPULATION_DRAIN_MS`.
 
 ---
 
