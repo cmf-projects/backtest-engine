@@ -16,7 +16,7 @@ enum class BusMsgType : std::uint32_t {
     Open = 1,         // engine → venue (in)
     OpenAck = 2,      // venue → engine (out)
     Tick = 3,         // venue → engine (out)
-    OrderBatch = 4,   // engine → venue (in) — stub body for now
+    OrderBatch = 4,   // engine → venue (in)
     OrdersAck = 5,    // venue → engine (out)
     Advance = 6,      // engine → venue (in)
     End = 7,          // venue → engine (out)
@@ -41,6 +41,19 @@ enum class BusExecType : std::uint8_t {
     Unspecified = 0,
     Fill = 1,
     Cancel = 2,
+};
+
+enum class BusSide : std::uint8_t {
+    Unspecified = 0,
+    Buy = 1,
+    Sell = 2,
+};
+
+enum class BusTimeInForce : std::uint8_t {
+    Unspecified = 0,
+    Day = 1,
+    Ioc = 2,
+    Fok = 3,
 };
 
 struct BusComponent {
@@ -109,8 +122,26 @@ struct BusTick {
     std::vector<BusSlotTick> slots;
 };
 
-// Stub: empty body. Real orders later.
-struct BusOrderBatch {};
+struct BusOrder {
+    std::uint32_t slot_id = 0;
+    std::uint64_t client_order_id = 0;
+    std::string component_id;
+    BusSide side = BusSide::Unspecified;
+    std::string price;  // decimal text
+    std::uint64_t qty = 0;
+    BusTimeInForce tif = BusTimeInForce::Unspecified;
+};
+
+struct BusCancel {
+    std::uint32_t slot_id = 0;
+    std::uint64_t client_order_id = 0;
+};
+
+// Engine → venue after Tick (may be empty).
+struct BusOrderBatch {
+    std::vector<BusOrder> orders;
+    std::vector<BusCancel> cancels;
+};
 
 struct BusOrdersAck {
     AckStatus status = AckStatus::Unspecified;

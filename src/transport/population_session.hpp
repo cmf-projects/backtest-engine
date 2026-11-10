@@ -60,10 +60,10 @@ private:
     // Protocol gate: is this inbound type legal in the current phase?
     [[nodiscard]] static bool Allowed(SessionPhase phase, BusMsgType type) noexcept;
 
-    [[nodiscard]] Step OnOpen(BusMsgType type, const std::vector<std::uint8_t>& payload);
-    [[nodiscard]] Step OnOrderOrAdvance(BusMsgType type, const std::vector<std::uint8_t>& payload);
-    [[nodiscard]] Step OnOrders(BusMsgType type, const std::vector<std::uint8_t>& payload);
-    [[nodiscard]] Step OnAdvance(BusMsgType type, const std::vector<std::uint8_t>& payload);
+    // Handlers assume Allowed() already passed; Close is handled in Run.
+    [[nodiscard]] Step OnOpen(const std::vector<std::uint8_t>& payload);
+    [[nodiscard]] Step OnOrders(const std::vector<std::uint8_t>& payload);
+    [[nodiscard]] Step OnAdvance(const std::vector<std::uint8_t>& payload);
 
     UdsConn& conn_;
     QueueRegistry& registry_;

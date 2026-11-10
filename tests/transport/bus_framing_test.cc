@@ -6,16 +6,23 @@
 using transport::BusAssetRole;
 using transport::BusBookPatchKind;
 using transport::BusBookUpdate;
+using transport::BusCancel;
 using transport::BusComponent;
 using transport::BusExecType;
 using transport::BusOpen;
+using transport::BusOrder;
+using transport::BusOrderBatch;
+using transport::BusSide;
 using transport::BusSlotConfig;
 using transport::BusSlotTick;
 using transport::BusTick;
+using transport::BusTimeInForce;
 using transport::BusTrade;
 using transport::DecodeBusOpen;
+using transport::DecodeBusOrderBatch;
 using transport::DecodeBusTick;
 using transport::EncodeBusOpen;
+using transport::EncodeBusOrderBatch;
 using transport::EncodeBusTick;
 using transport::ValidateBusOpen;
 
@@ -121,4 +128,73 @@ TEST(BusFraming, TickRoundTripWithBooksAndTrades) {
     EXPECT_EQ(got.slots[0].trades[0].client_order_id, 99u);
     EXPECT_EQ(got.slots[0].trades[0].exec_type, BusExecType::Fill);
     EXPECT_EQ(got.slots[0].trades[0].qty, 1u);
+}
+
+TEST(BusFraming, OrderBatchRoundTripEmpty) {
+    BusOrderBatch batch;
+    const auto bytes = EncodeBusOrderBatch(batch);
+    BusOrderBatch got;
+    ASSERT_TRUE(DecodeBusOrderBatch(bytes.data(), bytes.size(), got));
+    EXPECT_TRUE(got.orders.empty());
+    EXPECT_TRUE(got.cancels.empty());
+}
+
+TEST(BusFraming, OrderBatchRoundTripOrdersAndCancels) {
+    BusOrderBatch batch;
+    batch.orders.push_back(BusOrder{
+        .slot_id = 1,
+        .client_order_id = 42,
+        .component_id = "SPOT",
+        .side = BusSide::Buy,
+        .price = "100.5",
+        .qty = 10,
+        .tif = BusTimeInForce::Day,
+    });
+    batch.orders.push_back(BusOrder{
+        .slot_id = 2,
+        .client_order_id = 43,
+        .component_id = "FUT",
+        .side = BusSide::Sell,
+        .price = "25000",
+        .qty = 1,
+        .tif = BusTimeInForce::Ioc,
+    });
+    batch.cancels.push_back(BusCancel{.slot_id = 1, .client_order_id = 7});
+    batch.cancels.push_back(BusCancel{.slot_id = 2, .client_order_id = 8});
+
+    const auto bytes = EncodeBusOrderBatch(batch);
+    BusOrderBatch got;
+    ASSERT_TRUE(DecodeBusOrderBatch(bytes.data(), bytes.size(), got));
+    ASSERT_EQ(got.orders.size(), 2u);
+    EXPECT_EQ(got.orders[0].slot_id, 1u);
+    EXPECT_EQ(got.orders[0].client_order_id, 42u);
+    EXPECT_EQ(got.orders[0].component_id, "SPOT");
+    EXPECT_EQ(got.orders[0].side, BusSide::Buy);
+    EXPECT_EQ(got.orders[0].price, "100.5");
+    EXPECT_EQ(got.orders[0].qty, 10u);
+    EXPECT_EQ(got.orders[0].tif, BusTimeInForce::Day);
+    EXPECT_EQ(got.orders[1].side, BusSide::Sell);
+    EXPECT_EQ(got.orders[1].tif, BusTimeInForce::Ioc);
+    ASSERT_EQ(got.cancels.size(), 2u);
+    EXPECT_EQ(got.cancels[0].slot_id, 1u);
+    EXPECT_EQ(got.cancels[0].client_order_id, 7u);
+    EXPECT_EQ(got.cancels[1].client_order_id, 8u);
+}
+
+TEST(BusFraming, OrderBatchRejectsTruncated) {
+    BusOrderBatch batch;
+    batch.orders.push_back(BusOrder{
+        .slot_id = 1,
+        .client_order_id = 1,
+        .component_id = "SPOT",
+        .side = BusSide::Buy,
+        .price = "1",
+        .qty = 1,
+        .tif = BusTimeInForce::Day,
+    });
+    auto bytes = EncodeBusOrderBatch(batch);
+    ASSERT_GT(bytes.size(), 4u);
+    bytes.resize(bytes.size() - 1);
+    BusOrderBatch got;
+    EXPECT_FALSE(DecodeBusOrderBatch(bytes.data(), bytes.size(), got));
 }

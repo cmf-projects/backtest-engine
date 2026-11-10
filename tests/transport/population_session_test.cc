@@ -22,6 +22,7 @@ using transport::BusOpenAck;
 using transport::BusSlotConfig;
 using transport::BusTick;
 using transport::CreateQueues;
+using transport::BusOrderBatch;
 using transport::BusOrdersAck;
 using transport::DecodeBusEnd;
 using transport::DecodeBusError;
@@ -235,7 +236,7 @@ TEST(PopulationSession, OpenTickOrdersThenAdvanceEnd) {
             return;
         }
 
-        if (!in.TrySend(BusMsgType::OrderBatch, EncodeBusOrderBatch())) {
+        if (!in.TrySend(BusMsgType::OrderBatch, EncodeBusOrderBatch(BusOrderBatch{}))) {
             return;
         }
         if (!RecvMessage(out, type, payload) || type != BusMsgType::OrdersAck) {

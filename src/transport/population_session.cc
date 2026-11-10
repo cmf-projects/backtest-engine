@@ -80,12 +80,7 @@ FinishSessionStatus PopulationSession::FinishFatal(ErrorCode reason, std::string
                          cfg_.drain_timeout_ms, close_already_seen);
 }
 
-PopulationSession::Step PopulationSession::OnOpen(BusMsgType type,
-                                                  const std::vector<std::uint8_t>& payload) {
-    if (type == BusMsgType::Close) {
-        return FinishOk(ErrorCode::ClientClose, "close before open",
-                        /*close_already_seen=*/true);
-    }
+PopulationSession::Step PopulationSession::OnOpen(const std::vector<std::uint8_t>& payload) {
     BusOpen open;
     std::string why;
     if (!DecodeBusOpen(payload.data(), payload.size(), open) ||
@@ -117,23 +112,12 @@ PopulationSession::Step PopulationSession::OnOpen(BusMsgType type,
     return std::nullopt;
 }
 
-PopulationSession::Step PopulationSession::OnOrderOrAdvance(
-    BusMsgType type, const std::vector<std::uint8_t>& payload) {
-    if (type == BusMsgType::Close) {
-        return FinishOk(ErrorCode::ClientClose, "client close", true);
-    }
-    if (type == BusMsgType::OrderBatch) {
-        return OnOrders(type, payload);
-    }
-    return OnAdvance(type, payload);
-}
-
-PopulationSession::Step PopulationSession::OnOrders(BusMsgType type,
-                                                    const std::vector<std::uint8_t>& payload) {
-    (void)type;
-    if (!DecodeBusOrderBatch(payload.data(), payload.size())) {
+PopulationSession::Step PopulationSession::OnOrders(const std::vector<std::uint8_t>& payload) {
+    BusOrderBatch batch;
+    if (!DecodeBusOrderBatch(payload.data(), payload.size(), batch)) {
         return FinishFatal(ErrorCode::Internal, "bad OrderBatch", false);
     }
+    // 2.1: wire round-trip only; Population::Submit lands in 2.2.
     if (!SendOut(BusMsgType::OrdersAck, EncodeBusOrdersAck(MakeOrdersAckOk()))) {
         return FinishFatal(ErrorCode::Internal, "OrdersAck send failed", false);
     }
@@ -141,11 +125,7 @@ PopulationSession::Step PopulationSession::OnOrders(BusMsgType type,
     return std::nullopt;
 }
 
-PopulationSession::Step PopulationSession::OnAdvance(BusMsgType type,
-                                                     const std::vector<std::uint8_t>& payload) {
-    if (type == BusMsgType::Close) {
-        return FinishOk(ErrorCode::ClientClose, "client close", true);
-    }
+PopulationSession::Step PopulationSession::OnAdvance(const std::vector<std::uint8_t>& payload) {
     if (!DecodeBusAdvance(payload.data(), payload.size())) {
         return FinishFatal(ErrorCode::Internal, "bad Advance", false);
     }
@@ -189,17 +169,22 @@ FinishSessionStatus PopulationSession::Run() {
         if (!Allowed(phase_, type)) {
             return FinishFatal(ErrorCode::Internal, "message not allowed in current phase", false);
         }
+        if (type == BusMsgType::Close) {
+            const char* msg =
+                phase_ == SessionPhase::AwaitOpen ? "close before open" : "client close";
+            return FinishOk(ErrorCode::ClientClose, msg, /*close_already_seen=*/true);
+        }
 
         Step done;
         switch (phase_) {
             case SessionPhase::AwaitOpen:
-                done = OnOpen(type, payload);
+                done = OnOpen(payload);
                 break;
             case SessionPhase::AwaitOrderOrAdvance:
-                done = OnOrderOrAdvance(type, payload);
+                done = (type == BusMsgType::OrderBatch) ? OnOrders(payload) : OnAdvance(payload);
                 break;
             case SessionPhase::AwaitAdvance:
-                done = OnAdvance(type, payload);
+                done = OnAdvance(payload);
                 break;
             case SessionPhase::Finished:
                 return FinishSessionStatus::Failed;
