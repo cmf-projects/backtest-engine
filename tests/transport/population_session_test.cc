@@ -668,3 +668,186 @@ TEST(PopulationSession, ProtocolOpenAfterTickIsFatal) {
     EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
     EXPECT_EQ(registry.size(), 0u);
 }
+
+TEST(PopulationSession, BadOrderBatchUnknownSlotIsFatal) {
+    // Submit reject → OrdersAck ERROR + SessionEnded{fatal} (recoverable later).
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
+
+    FinishSessionStatus status = FinishSessionStatus::Failed;
+    SessionEnded ended;
+    BusOrdersAck orders_ack;
+
+    auto events = std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(2, 200, {{100.0, 8}}, {{101.0, 5}}),
+    };
+
+    std::thread server([&] {
+        const int raw = listener.Accept();
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
+            return;
+        }
+        PopulationSession session(conn, registry, MakeCfg("pop-ord", std::move(events)));
+        status = session.Run();
+    });
+
+    std::thread client([&] {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        const auto ack = RequestCreateQueues(conn, CreateQueues{.population_id = "pop-ord"});
+        if (ack.status != AckStatus::Ok) {
+            return;
+        }
+
+        SpscBus out(registry.FindOut(ack.out_queue));
+        SpscBus in(registry.FindIn(ack.in_queue));
+
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(MakeTestOpen("pop-ord", 1)))) {
+            return;
+        }
+
+        BusMsgType type{};
+        std::vector<std::uint8_t> payload;
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::OpenAck) {
+            return;
+        }
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::Tick) {
+            return;
+        }
+
+        BusOrderBatch batch;
+        batch.orders.push_back(BusOrder{
+            .slot_id = 99,  // unknown
+            .client_order_id = 1,
+            .component_id = "SPOT",
+            .side = BusSide::Buy,
+            .price = "100.00",
+            .qty = 1,
+            .tif = BusTimeInForce::Day,
+        });
+        if (!in.TrySend(BusMsgType::OrderBatch, EncodeBusOrderBatch(batch))) {
+            return;
+        }
+
+        ASSERT_TRUE(RecvMessage(out, type, payload));
+        EXPECT_EQ(type, BusMsgType::OrdersAck);
+        ASSERT_TRUE(DecodeBusOrdersAck(payload.data(), payload.size(), orders_ack));
+        EXPECT_EQ(orders_ack.status, AckStatus::Error);
+        EXPECT_FALSE(orders_ack.message.empty());
+
+        while (RecvMessage(out, type, payload, std::chrono::milliseconds(50))) {
+            if (type == BusMsgType::Error) {
+                break;
+            }
+        }
+
+        ASSERT_TRUE(WaitSessionEnded(conn, ended));
+        EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+        EXPECT_FALSE(ended.message.empty());
+        (void)in.TrySend(BusMsgType::Close, EncodeBusClose());
+    });
+
+    server.join();
+    client.join();
+
+    EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
+    EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+    EXPECT_EQ(orders_ack.status, AckStatus::Error);
+    EXPECT_EQ(registry.size(), 0u);
+}
+
+TEST(PopulationSession, TruncatedOrderBatchIsFatal) {
+    // Undecodable OrderBatch → fatal (no OrdersAck).
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
+
+    FinishSessionStatus status = FinishSessionStatus::Failed;
+    SessionEnded ended;
+
+    auto events = std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(2, 200, {{100.0, 8}}, {{101.0, 5}}),
+    };
+
+    std::thread server([&] {
+        const int raw = listener.Accept();
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
+            return;
+        }
+        PopulationSession session(conn, registry, MakeCfg("pop-trunc", std::move(events)));
+        status = session.Run();
+    });
+
+    std::thread client([&] {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        const auto ack = RequestCreateQueues(conn, CreateQueues{.population_id = "pop-trunc"});
+        if (ack.status != AckStatus::Ok) {
+            return;
+        }
+
+        SpscBus out(registry.FindOut(ack.out_queue));
+        SpscBus in(registry.FindIn(ack.in_queue));
+
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(MakeTestOpen("pop-trunc", 1)))) {
+            return;
+        }
+
+        BusMsgType type{};
+        std::vector<std::uint8_t> payload;
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::OpenAck) {
+            return;
+        }
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::Tick) {
+            return;
+        }
+
+        BusOrderBatch batch;
+        batch.orders.push_back(BusOrder{
+            .slot_id = 1,
+            .client_order_id = 1,
+            .component_id = "SPOT",
+            .side = BusSide::Buy,
+            .price = "100.00",
+            .qty = 1,
+            .tif = BusTimeInForce::Day,
+        });
+        auto bytes = EncodeBusOrderBatch(batch);
+        ASSERT_GT(bytes.size(), 4u);
+        bytes.resize(bytes.size() - 1);
+        if (!in.TrySend(BusMsgType::OrderBatch, bytes)) {
+            return;
+        }
+
+        ASSERT_TRUE(RecvMessage(out, type, payload));
+        EXPECT_EQ(type, BusMsgType::Error);
+
+        ASSERT_TRUE(WaitSessionEnded(conn, ended));
+        EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+        (void)in.TrySend(BusMsgType::Close, EncodeBusClose());
+    });
+
+    server.join();
+    client.join();
+
+    EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
+    EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+    EXPECT_EQ(registry.size(), 0u);
+}
