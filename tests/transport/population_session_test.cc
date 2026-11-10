@@ -5,25 +5,34 @@
 #include "transport/spsc_bus.hpp"
 #include "transport/uds_control.hpp"
 
+#include "fake_tape.hpp"
+
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <memory>
 #include <string>
 #include <thread>
 #include <unistd.h>
 #include <vector>
 
+using population::Level;
+using population::SnapshotEvent;
+using population::test::FakeTape;
 using transport::AckStatus;
 using transport::BusAssetRole;
 using transport::BusComponent;
 using transport::BusMsgType;
 using transport::BusOpen;
 using transport::BusOpenAck;
-using transport::BusSlotConfig;
-using transport::BusTick;
-using transport::CreateQueues;
+using transport::BusOrder;
 using transport::BusOrderBatch;
 using transport::BusOrdersAck;
+using transport::BusSide;
+using transport::BusSlotConfig;
+using transport::BusTick;
+using transport::BusTimeInForce;
+using transport::CreateQueues;
 using transport::DecodeBusEnd;
 using transport::DecodeBusError;
 using transport::DecodeBusOpenAck;
@@ -74,6 +83,17 @@ bool RecvMessage(SpscBus& bus, BusMsgType& type, std::vector<std::uint8_t>& payl
     return false;
 }
 
+SnapshotEvent Ev(std::uint64_t seq, std::uint64_t ts_ns, std::vector<Level> bids,
+                 std::vector<Level> asks) {
+    SnapshotEvent e;
+    e.seq = seq;
+    e.ts_ns = ts_ns;
+    e.symbol = "SBER";
+    e.bids = std::move(bids);
+    e.asks = std::move(asks);
+    return e;
+}
+
 BusOpen MakeTestOpen(std::string population_id, std::uint32_t n_slots) {
     BusOpen open;
     open.population_id = std::move(population_id);
@@ -96,16 +116,30 @@ BusOpen MakeTestOpen(std::string population_id, std::uint32_t n_slots) {
     return open;
 }
 
+SessionConfig MakeCfg(std::string population_id, std::vector<SnapshotEvent> events) {
+    SessionConfig cfg;
+    cfg.population_id = std::move(population_id);
+    cfg.drain_timeout_ms = 2'000;
+    cfg.make_tape = [events = std::move(events)](const BusComponent&) mutable {
+        return std::make_unique<FakeTape>(std::move(events));
+    };
+    return cfg;
+}
+
 }  // namespace
 
-TEST(PopulationSession, NormalOpenTickAdvanceEnd) {
-    // After Tick, Advance alone is legal («нет ордеров»).
+TEST(PopulationSession, OpenTickAdvanceEndWithPopulation) {
     const std::string path = TempSockPath();
     auto listener = UdsListener::Bind(path);
     QueueRegistry registry;
 
     FinishSessionStatus status = FinishSessionStatus::Failed;
     SessionEnded ended;
+
+    auto events = std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(2, 200, {{100.0, 8}}, {{101.0, 5}}),
+    };
 
     std::thread server([&] {
         const int raw = listener.Accept();
@@ -116,10 +150,7 @@ TEST(PopulationSession, NormalOpenTickAdvanceEnd) {
         if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
             return;
         }
-        PopulationSession session(conn, registry,
-                                  SessionConfig{.population_id = "pop-n",
-                                                .drain_timeout_ms = 2'000,
-                                                .stub_ticks = 1});
+        PopulationSession session(conn, registry, MakeCfg("pop-n", std::move(events)));
         status = session.Run();
     });
 
@@ -137,7 +168,7 @@ TEST(PopulationSession, NormalOpenTickAdvanceEnd) {
         SpscBus out(registry.FindOut(ack.out_queue));
         SpscBus in(registry.FindIn(ack.in_queue));
 
-        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(MakeTestOpen("pop-n", 2)))) {
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(MakeTestOpen("pop-n", 1)))) {
             return;
         }
 
@@ -148,7 +179,7 @@ TEST(PopulationSession, NormalOpenTickAdvanceEnd) {
         }
         BusOpenAck open_ack;
         if (!DecodeBusOpenAck(payload.data(), payload.size(), open_ack) ||
-            open_ack.status != AckStatus::Ok || open_ack.n_slots != 2u) {
+            open_ack.status != AckStatus::Ok || open_ack.n_slots != 1u) {
             return;
         }
 
@@ -156,15 +187,28 @@ TEST(PopulationSession, NormalOpenTickAdvanceEnd) {
             return;
         }
         BusTick tick;
-        if (!DecodeBusTick(payload.data(), payload.size(), tick) || tick.pop_ts_ns != 1u ||
-            tick.slots.size() != 2u) {
+        if (!DecodeBusTick(payload.data(), payload.size(), tick) || tick.pop_ts_ns != 100u ||
+            tick.slots.size() != 1u || tick.slots[0].books.empty()) {
             return;
         }
+        EXPECT_EQ(tick.slots[0].books[0].component_id, "SPOT");
+        EXPECT_FALSE(tick.slots[0].books[0].bids.empty());
 
+        // Advance to second event → another Tick.
         if (!in.TrySend(BusMsgType::Advance, EncodeBusAdvance())) {
             return;
         }
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::Tick) {
+            return;
+        }
+        if (!DecodeBusTick(payload.data(), payload.size(), tick) || tick.pop_ts_ns != 200u) {
+            return;
+        }
 
+        // Advance past EOF → End.
+        if (!in.TrySend(BusMsgType::Advance, EncodeBusAdvance())) {
+            return;
+        }
         if (!RecvMessage(out, type, payload) || type != BusMsgType::End ||
             !DecodeBusEnd(payload.data(), payload.size())) {
             return;
@@ -184,14 +228,18 @@ TEST(PopulationSession, NormalOpenTickAdvanceEnd) {
     EXPECT_EQ(registry.size(), 0u);
 }
 
-TEST(PopulationSession, OpenTickOrdersThenAdvanceEnd) {
-    // After Tick, OrderBatch → OrdersAck → Advance.
+TEST(PopulationSession, SubmitOrderThenAdvance) {
     const std::string path = TempSockPath();
     auto listener = UdsListener::Bind(path);
     QueueRegistry registry;
 
     FinishSessionStatus status = FinishSessionStatus::Failed;
     SessionEnded ended;
+
+    auto events = std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(2, 200, {{100.0, 10}}, {{101.0, 5}}),
+    };
 
     std::thread server([&] {
         const int raw = listener.Accept();
@@ -202,10 +250,7 @@ TEST(PopulationSession, OpenTickOrdersThenAdvanceEnd) {
         if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
             return;
         }
-        PopulationSession session(conn, registry,
-                                  SessionConfig{.population_id = "pop-o",
-                                                .drain_timeout_ms = 2'000,
-                                                .stub_ticks = 1});
+        PopulationSession session(conn, registry, MakeCfg("pop-o", std::move(events)));
         status = session.Run();
     });
 
@@ -236,7 +281,17 @@ TEST(PopulationSession, OpenTickOrdersThenAdvanceEnd) {
             return;
         }
 
-        if (!in.TrySend(BusMsgType::OrderBatch, EncodeBusOrderBatch(BusOrderBatch{}))) {
+        BusOrderBatch batch;
+        batch.orders.push_back(BusOrder{
+            .slot_id = 1,
+            .client_order_id = 7,
+            .component_id = "SPOT",
+            .side = BusSide::Buy,
+            .price = "100.00",
+            .qty = 1,
+            .tif = BusTimeInForce::Day,
+        });
+        if (!in.TrySend(BusMsgType::OrderBatch, EncodeBusOrderBatch(batch))) {
             return;
         }
         if (!RecvMessage(out, type, payload) || type != BusMsgType::OrdersAck) {
@@ -245,6 +300,13 @@ TEST(PopulationSession, OpenTickOrdersThenAdvanceEnd) {
         BusOrdersAck orders_ack;
         if (!DecodeBusOrdersAck(payload.data(), payload.size(), orders_ack) ||
             orders_ack.status != AckStatus::Ok) {
+            return;
+        }
+
+        if (!in.TrySend(BusMsgType::Advance, EncodeBusAdvance())) {
+            return;
+        }
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::Tick) {
             return;
         }
 
@@ -277,6 +339,11 @@ TEST(PopulationSession, ClientCloseAfterTick) {
     FinishSessionStatus status = FinishSessionStatus::Failed;
     SessionEnded ended;
 
+    auto events = std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(2, 200, {{100.0, 8}}, {{101.0, 5}}),
+    };
+
     std::thread server([&] {
         const int raw = listener.Accept();
         if (raw < 0) {
@@ -286,10 +353,7 @@ TEST(PopulationSession, ClientCloseAfterTick) {
         if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
             return;
         }
-        PopulationSession session(conn, registry,
-                                  SessionConfig{.population_id = "pop-c",
-                                                .drain_timeout_ms = 2'000,
-                                                .stub_ticks = 3});
+        PopulationSession session(conn, registry, MakeCfg("pop-c", std::move(events)));
         status = session.Run();
     });
 
@@ -352,10 +416,9 @@ TEST(PopulationSession, UnexpectedMessageIsFatal) {
         if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
             return;
         }
+        // Tape unused — fail before Open completes.
         PopulationSession session(conn, registry,
-                                  SessionConfig{.population_id = "pop-f",
-                                                .drain_timeout_ms = 2'000,
-                                                .stub_ticks = 1});
+                                  MakeCfg("pop-f", {Ev(1, 1, {{1.0, 1}}, {{2.0, 1}})}));
         status = session.Run();
     });
 
@@ -373,14 +436,13 @@ TEST(PopulationSession, UnexpectedMessageIsFatal) {
         SpscBus out(registry.FindOut(ack.out_queue));
         SpscBus in(registry.FindIn(ack.in_queue));
 
-        // Advance before Open → protocol fatal.
         if (!in.TrySend(BusMsgType::Advance, EncodeBusAdvance())) {
             return;
         }
 
         BusMsgType type{};
         std::vector<std::uint8_t> payload;
-        (void)RecvMessage(out, type, payload);  // best-effort Error
+        (void)RecvMessage(out, type, payload);
         if (type == BusMsgType::Error) {
             transport::BusError err;
             (void)DecodeBusError(payload.data(), payload.size(), err);

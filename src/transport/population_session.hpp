@@ -1,8 +1,10 @@
 #pragma once
 
-// Venue-side population run over an existing UDS + SPSC pair (stub population).
-// docs/POPULATION_TZ.md §5.3–5.5; IMPL 1.2
+// Venue-side population run over an existing UDS + SPSC pair.
+// docs/POPULATION_TZ.md §5.3–5.5; IMPL 2.2 (wires Population).
 
+#include "population/population.hpp"
+#include "population/tape.hpp"
 #include "transport/bus_messages.hpp"
 #include "transport/control.hpp"
 #include "transport/queue_registry.hpp"
@@ -11,6 +13,8 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -29,8 +33,9 @@ enum class SessionPhase : std::uint8_t {
 struct SessionConfig {
     std::string population_id;
     std::uint32_t drain_timeout_ms = kDefaultDrainTimeoutMs;
-    // Stub: how many Ticks before End (Advance after the last → End).
-    std::uint32_t stub_ticks = 1;
+    // Builds a Tape for Open.components[0] (P0 single-component).
+    // Default (empty): dataset::MakeJsonlTape(path, sec_code).
+    std::function<population::TapePtr(const BusComponent&)> make_tape;
 };
 
 class PopulationSession {
@@ -40,11 +45,10 @@ public:
     [[nodiscard]] bool valid() const noexcept { return out_.valid() && in_.valid(); }
     [[nodiscard]] SessionPhase phase() const noexcept { return phase_; }
 
-    // Drive stub SM until Finished. Blocks (polls buses / drain).
+    // Drive SM until Finished. Blocks (polls buses / drain).
     [[nodiscard]] FinishSessionStatus Run();
 
 private:
-    // nullopt = keep looping; value = session finished with that status.
     using Step = std::optional<FinishSessionStatus>;
 
     [[nodiscard]] FinishSessionStatus FinishOk(ErrorCode reason, std::string message,
@@ -57,13 +61,14 @@ private:
 
     [[nodiscard]] std::chrono::steady_clock::time_point StallDeadline() const;
 
-    // Protocol gate: is this inbound type legal in the current phase?
     [[nodiscard]] static bool Allowed(SessionPhase phase, BusMsgType type) noexcept;
 
-    // Handlers assume Allowed() already passed; Close is handled in Run.
     [[nodiscard]] Step OnOpen(const std::vector<std::uint8_t>& payload);
     [[nodiscard]] Step OnOrders(const std::vector<std::uint8_t>& payload);
     [[nodiscard]] Step OnAdvance(const std::vector<std::uint8_t>& payload);
+
+    [[nodiscard]] Step SendTickFromPopulation();
+    [[nodiscard]] population::TapePtr MakeTape(const BusComponent& component) const;
 
     UdsConn& conn_;
     QueueRegistry& registry_;
@@ -71,9 +76,7 @@ private:
     SpscBus out_;
     SpscBus in_;
     SessionPhase phase_ = SessionPhase::AwaitOpen;
-    std::uint32_t ticks_sent_ = 0;
-    std::uint32_t n_slots_ = 0;
-    std::vector<BusSlotConfig> slots_;  // from Open; stub Tick emits one row per slot
+    std::unique_ptr<population::Population> pop_;
 };
 
 }  // namespace transport

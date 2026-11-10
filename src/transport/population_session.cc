@@ -1,10 +1,14 @@
 #include "transport/population_session.hpp"
 
+#include "dataset/jsonl_tape.hpp"
 #include "transport/bus_framing.hpp"
 #include "transport/bus_messages.hpp"
+#include "transport/bus_population_map.hpp"
 
 #include <chrono>
+#include <stdexcept>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace transport {
@@ -62,9 +66,17 @@ bool PopulationSession::Allowed(SessionPhase phase, BusMsgType type) noexcept {
     return false;
 }
 
+population::TapePtr PopulationSession::MakeTape(const BusComponent& component) const {
+    if (cfg_.make_tape) {
+        return cfg_.make_tape(component);
+    }
+    return dataset::MakeJsonlTape(component.dataset_path, component.sec_code);
+}
+
 FinishSessionStatus PopulationSession::FinishOk(ErrorCode reason, std::string message,
                                                 bool close_already_seen) {
     phase_ = SessionPhase::Finished;
+    pop_.reset();
     return FinishSession(conn_, registry_,
                          MakeSessionEndedOk(cfg_.population_id, reason, std::move(message)),
                          cfg_.drain_timeout_ms, close_already_seen);
@@ -75,9 +87,22 @@ FinishSessionStatus PopulationSession::FinishFatal(ErrorCode reason, std::string
     phase_ = SessionPhase::Finished;
     (void)SendOut(BusMsgType::Error,
                   EncodeBusError(BusError{.code = reason, .message = message}));
+    pop_.reset();
     return FinishSession(conn_, registry_,
                          MakeSessionEndedFatal(cfg_.population_id, reason, std::move(message)),
                          cfg_.drain_timeout_ms, close_already_seen);
+}
+
+PopulationSession::Step PopulationSession::SendTickFromPopulation() {
+    if (pop_ == nullptr) {
+        return FinishFatal(ErrorCode::Internal, "no population", false);
+    }
+    const BusTick tick = ToBusTick(pop_->MakeTick());
+    if (!SendOut(BusMsgType::Tick, EncodeBusTick(tick))) {
+        return FinishFatal(ErrorCode::Internal, "Tick send failed", false);
+    }
+    phase_ = SessionPhase::AwaitOrderOrAdvance;
+    return std::nullopt;
 }
 
 PopulationSession::Step PopulationSession::OnOpen(const std::vector<std::uint8_t>& payload) {
@@ -90,26 +115,47 @@ PopulationSession::Step PopulationSession::OnOpen(const std::vector<std::uint8_t
                                                          why.empty() ? "bad Open" : why)));
         return FinishFatal(ErrorCode::Internal, why.empty() ? "bad Open" : why, false);
     }
-    slots_ = open.slots;
-    n_slots_ = static_cast<std::uint32_t>(slots_.size());
+    // P0: single-component Population; bundle is milestone 3.
+    if (open.components.size() != 1) {
+        const std::string msg = "P0 expects exactly one component";
+        (void)SendOut(BusMsgType::OpenAck,
+                      EncodeBusOpenAck(MakeBusOpenReject(cfg_.population_id, ErrorCode::Internal,
+                                                         msg)));
+        return FinishFatal(ErrorCode::Internal, msg, false);
+    }
+
+    const BusComponent& component = open.components.front();
+    double tick_size = 0.0;
+    if (!ParseDecimal(component.tick_size, tick_size) || !(tick_size > 0.0)) {
+        const std::string msg = "bad tick_size";
+        (void)SendOut(BusMsgType::OpenAck,
+                      EncodeBusOpenAck(MakeBusOpenReject(cfg_.population_id, ErrorCode::Internal,
+                                                         msg)));
+        return FinishFatal(ErrorCode::Internal, msg, false);
+    }
+
+    try {
+        auto tape = MakeTape(component);
+        if (tape == nullptr) {
+            throw std::runtime_error("make_tape returned null");
+        }
+        pop_ = std::make_unique<population::Population>(
+            component.component_id, tick_size, std::move(tape), ToSlotConfigs(open.slots));
+        pop_->Start();
+    } catch (const std::exception& ex) {
+        const std::string msg = ex.what();
+        (void)SendOut(BusMsgType::OpenAck,
+                      EncodeBusOpenAck(MakeBusOpenReject(cfg_.population_id, ErrorCode::Internal,
+                                                         msg)));
+        return FinishFatal(ErrorCode::Internal, msg, false);
+    }
+
+    const auto n_slots = static_cast<std::uint32_t>(open.slots.size());
     if (!SendOut(BusMsgType::OpenAck,
-                 EncodeBusOpenAck(MakeBusOpenOk(cfg_.population_id, n_slots_)))) {
+                 EncodeBusOpenAck(MakeBusOpenOk(cfg_.population_id, n_slots)))) {
         return FinishFatal(ErrorCode::Internal, "OpenAck send failed", false);
     }
-    BusTick tick;
-    tick.pop_ts_ns = 1;
-    tick.slots.reserve(slots_.size());
-    for (const auto& slot : slots_) {
-        BusSlotTick row;
-        row.slot_id = slot.slot_id;
-        tick.slots.push_back(std::move(row));
-    }
-    if (!SendOut(BusMsgType::Tick, EncodeBusTick(tick))) {
-        return FinishFatal(ErrorCode::Internal, "Tick send failed", false);
-    }
-    ++ticks_sent_;
-    phase_ = SessionPhase::AwaitOrderOrAdvance;
-    return std::nullopt;
+    return SendTickFromPopulation();
 }
 
 PopulationSession::Step PopulationSession::OnOrders(const std::vector<std::uint8_t>& payload) {
@@ -117,7 +163,19 @@ PopulationSession::Step PopulationSession::OnOrders(const std::vector<std::uint8
     if (!DecodeBusOrderBatch(payload.data(), payload.size(), batch)) {
         return FinishFatal(ErrorCode::Internal, "bad OrderBatch", false);
     }
-    // 2.1: wire round-trip only; Population::Submit lands in 2.2.
+    if (pop_ == nullptr) {
+        return FinishFatal(ErrorCode::Internal, "no population", false);
+    }
+
+    const population::OrderBatch domain = ToOrderBatch(batch);
+    const population::OrderBatchResult result = pop_->Submit(domain);
+    const auto failures = result.Failures(domain);
+    if (!failures.empty()) {
+        (void)SendOut(BusMsgType::OrdersAck,
+                      EncodeBusOrdersAck(MakeOrdersAckReject(ErrorCode::Internal, "bad orders")));
+        // P0: broken batch is fatal (recoverable OrdersAck later).
+        return FinishFatal(ErrorCode::Internal, "OrderBatch rejected", false);
+    }
     if (!SendOut(BusMsgType::OrdersAck, EncodeBusOrdersAck(MakeOrdersAckOk()))) {
         return FinishFatal(ErrorCode::Internal, "OrdersAck send failed", false);
     }
@@ -129,30 +187,20 @@ PopulationSession::Step PopulationSession::OnAdvance(const std::vector<std::uint
     if (!DecodeBusAdvance(payload.data(), payload.size())) {
         return FinishFatal(ErrorCode::Internal, "bad Advance", false);
     }
-    if (ticks_sent_ >= cfg_.stub_ticks) {
+    if (pop_ == nullptr) {
+        return FinishFatal(ErrorCode::Internal, "no population", false);
+    }
+    if (!pop_->Advance()) {
         if (!SendOut(BusMsgType::End, EncodeBusEnd())) {
             return FinishFatal(ErrorCode::Internal, "End send failed", false);
         }
         return FinishOk(ErrorCode::Unspecified, "tape end", false);
     }
-    BusTick tick;
-    tick.pop_ts_ns = static_cast<std::uint64_t>(ticks_sent_ + 1);
-    tick.slots.reserve(slots_.size());
-    for (const auto& slot : slots_) {
-        BusSlotTick row;
-        row.slot_id = slot.slot_id;
-        tick.slots.push_back(std::move(row));
-    }
-    if (!SendOut(BusMsgType::Tick, EncodeBusTick(tick))) {
-        return FinishFatal(ErrorCode::Internal, "Tick send failed", false);
-    }
-    ++ticks_sent_;
-    phase_ = SessionPhase::AwaitOrderOrAdvance;
-    return std::nullopt;
+    return SendTickFromPopulation();
 }
 
 FinishSessionStatus PopulationSession::Run() {
-    if (!valid() || cfg_.population_id.empty() || cfg_.stub_ticks == 0) {
+    if (!valid() || cfg_.population_id.empty()) {
         return FinishSessionStatus::Failed;
     }
 

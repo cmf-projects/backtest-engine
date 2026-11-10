@@ -114,6 +114,7 @@ add_library(transport_lib
   src/transport/uds_framing.cc
   src/transport/uds_control.cc
   src/transport/bus_framing.cc
+  src/transport/bus_population_map.cc
   src/transport/spsc_bus.cc
   src/transport/population_session.cc)
 add_library(cmf::transport ALIAS transport_lib)
@@ -122,6 +123,7 @@ target_include_directories(transport_lib
   PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>")
 target_compile_features(transport_lib PUBLIC cxx_std_20)
+target_link_libraries(transport_lib PUBLIC cmf::population cmf::dataset)
 
 # ---------------------------------------------------------------------------
 # App entrypoint — apps/backtest → binary name `backtest` (engine looks for it)
@@ -168,6 +170,8 @@ if(CMF_BUILD_TESTS)
     tests/transport/spsc_bus_test.cc
     tests/transport/bus_framing_test.cc
     tests/transport/population_session_test.cc)
+  target_include_directories(transport_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/population")
   target_link_libraries(transport_tests PRIVATE
     cmf::transport
     GTest::gtest_main)
