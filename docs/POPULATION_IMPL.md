@@ -1,9 +1,10 @@
 # План реализации: population + UDS/SPSC
 
 Канон семантики: [`POPULATION_TZ.md`](POPULATION_TZ.md).  
+Ориентация / layout для агентов: [`CONTEXT.md`](CONTEXT.md).  
 Этот документ — **порядок работ**, чтобы уже писать код. Не дублирует ТЗ.
 
-**Не трогаем в этих вехах:** CMF `make run` / `src/venue/` (smoke остаётся).  
+**CMF TCP path снят** (`backtest` / `cmf_driver` / `src/venue` удалены); работаем только на population UDS.  
 **Позже:** квоты, recoverable `OrdersAck`, index, multi-population fairness.
 
 ---
@@ -14,21 +15,20 @@
 | --- | --- |
 | `src/population/*` | 1 component: Start / MakeTick / Submit / Advance, impact, match, tests |
 | `src/dataset/jsonl_tape.*` | Tape ← JSONL |
-| `protos/messages.proto` | Схема сообщений (без gRPC runtime) |
-| `third_party/ipc.h` | SPMC ring (не SPSC); кандидат на out/in или эталон |
-| gRPC / `rpc.proto` service | **не делаем**; service можно игнорить |
+| `src/transport/*` | UDS control + SPSC bus + session (свой binary framing) |
+| `apps/population_venue` + smoke | listen UDS; in-process smoke |
+| `third_party/ipc.h` | не подключён (эталон SPMC; свой SPSC уже есть) |
 
-Gap до ТЗ: нет UDS+очередей+SessionEnded; нет 1…3 книг; Submit ещё думает про recoverable Ack.
+Gap до ТЗ: нет 1…3 книг (bundle); Submit ещё без recoverable Ack.
 
 ---
 
 ## Целевой каркас модулей
 
 ```text
-apps/population_venue/     # или расширить backtest: listen UDS
-src/transport/uds/         # create | reject | SessionEnded
-src/transport/spsc/        # пара колец на прогон (+ обёртка над ipc/своим SPSC)
-src/transport/session/     # state machine §5.3–5.5 + drain Close|timeout
+apps/population_venue/     # UDS listen → App::Run
+src/population_venue/      # config + application
+src/transport/             # UDS create/SessionEnded + SPSC + session SM
 src/population/            # ядро (расширить до bundle)
 src/dataset/               # + merge timeline 1…3 JSONL
 ```
@@ -75,7 +75,7 @@ Stub population: один фейковый Tick / сразу End — доста�
 
 | # | Задача | Done when |
 | --- | --- | --- |
-| 2.1 | Map wire ↔ in-memory: Open / TickView / OrderBatch / Advance / Close / End / Error (protobuf serialize **или** простой binary; без gRPC) | round-trip тест на Tick + Order |
+| 2.1 | Map wire ↔ in-memory: Open / TickView / OrderBatch / Advance / Close / End / Error (свой binary framing) | round-trip тест на Tick + Order |
 | 2.2 | Session вызывает `Population::{Start,MakeTick,Submit,Advance}` | один JSONL, 1–N slots, fake engine в тесте гоняет цикл §5.4 |
 | 2.3 | Битый Open / protocol violation → fatal §5.5 (не recoverable) | тест |
 | 2.4 | Битый OrderBatch → **пока fatal** (recoverable Ack — позже) | тест |
@@ -108,7 +108,20 @@ CMF binary не ломаем. Population lib линкуем в новый app.
 | 4.1 | Один `PriceToTicks` util (см. `TODO_PRICE_TO_TICKS.md`) | нет локальных копий в population path |
 | 4.2 | Решить §8.4 impact@view_ts (упрощение ok для P0: current eaten − old file snap) | ADR-строка в ТЗ или комментарий + тест |
 | 4.3 | README: UDS path, как поднять population venue + fake client | абзац + make target |
-| 4.4 | `protos/rpc.proto`: пометка deprecated / не генерить gRPC | generate.sh не требует plugin |
+
+---
+
+## Веха 5 — Ops: graceful shutdown + логер (в самом конце)
+
+**Зачем:** venue как долгоживущий сервис: Ctrl+C не рвёт сессии на полуслове; логи читаемы людьми и машиной.
+
+| # | Задача | Done when |
+| --- | --- | --- |
+| 5.1 | Graceful shutdown по **Ctrl+C** (`SIGINT` / при необходимости `SIGTERM`): перестать Accept/Create, дождаться drain текущих `PopulationSession` (или их `Finish*` с понятным reason), затем teardown listener/UDS | сигнал → нет новых Create; живые попы корректно SessionEnded; процесс выходит 0 (или явный код) без abort |
+| 5.2 | Логер: **уровни** (debug/info/warn/error), два формата вывода — **plain** (человекочитаемый) и **JSON** (одна строка / event); конфиг формата и level из toml/env | venue/session пишут через логер, не через сырой `fprintf`; переключение plain↔json без перекомпиляции |
+| 5.3 | Не писать логер с нуля, если можно взять готовое: **в этом репо логера нет**; кандидаты снаружи — `spdlog` (levels + sinks; JSON через pattern/custom sink) или тонкая обёртка над ним. Выбрать одно, зафиксировать в CMake/FetchContent | зависимость подключена; короткий usage в README |
+
+Порядок внутри вехи: сначала 5.1 (не зависит от логера), затем 5.2–5.3 (можно заменить `fprintf` по мере появления sinks).
 
 ---
 
@@ -129,9 +142,10 @@ CMF binary не ломаем. Population lib линкуем в новый app.
 2. **Session lifecycle** (1.1–1.5) со stub population  
 3. **Wire + real Population 1-book** (2.x)  
 4. **MergedTape + 1…3 books** (3.x)  
-5. Полировка (4.x)
+5. Полировка (4.x)  
+6. **Graceful Ctrl+C + логер plain/JSON** (5.x) — после рабочего venue
 
-Каждый PR: тесты на Done when; CMF `make test` / `make run` зелёные если задеты.
+Каждый PR: тесты на Done when; `make test` / `make population-smoke` зелёные.
 
 ---
 

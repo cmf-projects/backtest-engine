@@ -3,11 +3,10 @@
 Техническое задание по итогам дизайн-сессии.  
 Смежные документы:
 
+- **ориентация для агентов** — [`CONTEXT.md`](CONTEXT.md)
 - **план работ (писать код)** — [`POPULATION_IMPL.md`](POPULATION_IMPL.md)
 - черновик архитектуры — [`POPULATION_PLAN.md`](POPULATION_PLAN.md)
 - глоссарий — [`GLOSSARY.md`](GLOSSARY.md)
-- CMF — [`TASK.md`](TASK.md)
-- контекст репо — [`CONTEXT.md`](CONTEXT.md)
 
 **Статус:** согласованный каркас + явный список открытых пунктов (§8).  
 **Не в этом документе:** построчный код, калибровка `λ`, замена JSONL на бинарный формат.
@@ -32,8 +31,7 @@ Venue обслуживает **популяции** стратегий на **о
 
 **gRPC снят с канона:** отдельный runtime и лишняя стоимость на горячем пути.
 
-CMF TCP (`feed` + `orders`) остаётся 1-slot smoke / legacy engine, **не**
-мультиплекс популяций.
+CMF TCP path из репо снят; мультиплекс популяций — только UDS + SPSC.
 
 ---
 
@@ -41,7 +39,7 @@ CMF TCP (`feed` + `orders`) остаётся 1-slot smoke / legacy engine, **н�
 
 | Роль | Процесс | Ответственность |
 | --- | --- | --- |
-| **Venue** | `backtest` | Датасет, TapeWindow, матч, impact, working orders, Exec/Trades; слушает UDS |
+| **Venue** | `population_venue` | Датасет, TapeWindow, матч, impact, working orders, Tick/Trades; слушает UDS |
 | **Trading Engine** | внешний процесс | Подключается к UDS, открывает популяцию, код стратегий, учёт филлов / маржи / PnL |
 | **Strategy (геном)** | внутри Trading Engine | Решение по view; помнит в основном **сделки**; working book не дублирует |
 
@@ -481,8 +479,8 @@ UDS Open → OpenAck (+ 2×SPSC при OK); цикл Tick → Orders → Advance
 нормальный конец = venue `End`; опционально клиент `Close` = graceful
 shutdown only. In-process API не в P0. **gRPC не входит в план.**
 
-Имена/схема сообщений могут жить в `protos/` как IDL без gRPC; wire =
-собственный фрейминг поверх UDS/SPSC (§8.2).
+Схема сообщений — in-memory / binary framing в `src/transport/` поверх UDS/SPSC
+(§8.2); protobuf/gRPC не используем.
 
 ### 8.11 Документы
 

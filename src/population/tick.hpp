@@ -9,7 +9,7 @@
 
 namespace population {
 
-// In-memory Tick (mirrors protos/messages.proto).
+// In-memory Tick (population ↔ transport map).
 //
 // Cadence:
 // - `Tick.books` (shared) unused in P0 with per-slot md_lag.

@@ -10,9 +10,8 @@
 
 Смежные документы:
 
+- ориентация для агентов — [`CONTEXT.md`](CONTEXT.md)
 - глоссарий терминов — [`GLOSSARY.md`](GLOSSARY.md)
-- текущий CMF-протокол — [`TASK.md`](TASK.md)
-- роли и layout репозитория — [`CONTEXT.md`](CONTEXT.md)
 
 **Статус:** архитектурный план (без реализации в этом документе).
 
@@ -51,19 +50,18 @@
 
 ## 2. Текущее состояние (якорь)
 
-Сейчас (`src/venue/venue.cc`, `include/cmf/cmf_driver.hpp`):
+Сейчас (population UDS path):
 
-- 1 процесс = 1 инструмент = 1 пара TCP = 1 «аккаунт» (`K`) = один `Working` book.
-- Горизонт `H` / lookahead `Δ` — это **CMF sync** (Chandy–Misra–Bryant), не оффсет
-  стратегии в популяции.
-- Филл деструктивно уменьшает `bids_` / `asks_`; следующий JSONL-ивент перезаписывает
-  стакан из файла — другая модель, чем нужна для популяций.
-- Мультисимвол в протоколе есть (`class` / `sec`), в venue — фильтр на один `sec_code`.
+- `population_venue` слушает UDS; `CreateQueues` → пара SPSC + `PopulationSession`.
+- 1 population = 1 JSONL component (P0); K слотов; impact/`λ` уже в ядре.
+- CMF TCP (`backtest` / `cmf_driver`) снят с репо.
+- Bundle 1…3 книг — веха 3 в [`POPULATION_IMPL.md`](POPULATION_IMPL.md).
 
 ```text
-JSONL (один symbol) ──► Venue ── feed TCP (S/I/H/E) ──► Engine
-                         ▲
-                         └── order TCP (HELLO/N/C/TIME) ─┘
+JSONL ──► Population ── SPSC out (Tick/…) ──► Engine
+              ▲
+              └── SPSC in (Open/Orders/Advance/Close)
+UDS control: CreateQueues / CreateAck / SessionEnded
 ```
 
 ---
@@ -336,8 +334,8 @@ Phase 1 без ломки `make run`: CMF path = population size 1, impact — o
    нет конкуренции за ликвидность, нет видимости чужих ордеров/филлов. Общий только
    file cursor. Режим «один ImpactState на популяцию» — другая экономика, **не** в
    скоупе.
-4. **CMF increments.** Engine может игнорировать `I` ([TASK.md](TASK.md) §5.2).
-   Внешнему engine — слать `S`; внутри популяции — нативные структуры.
+4. **Снимки vs инкременты.** Снаружи engine — полные снимки книги в Tick;
+   внутри популяции — нативные структуры / diff по необходимости.
 5. **Apply order.** Сначала file book, потом вычесть recovered eaten. Иначе
    экспонента бессмысленна при текущей перезаписи `bids_ = event.bids`.
 6. **`λ`** — гиперпараметр в config популяции, не хардкод.
@@ -356,9 +354,8 @@ Phase 1 без ломки `make run`: CMF path = population size 1, impact — o
 - Не копировать стакан на слот: file book + sparse impact map.
 - Вместо B-tree сразу — `lower_bound` по sorted ts-index; B-tree только для
   global catalog.
-- Схема сообщений (можно из `protos/`) без gRPC runtime — фрейминг в UDS/SPSC.
+- Схема сообщений — binary framing в `src/transport/` (UDS/SPSC), без protobuf.
 - Популяции — независимые задачи на thread pool.
-- CMF остаётся regression-путём на 1 slot.
 
 ---
 

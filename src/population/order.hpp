@@ -7,7 +7,7 @@
 
 namespace population {
 
-// Mirrors protos/messages.proto Side / TimeInForce / ErrorCode (order-scoped).
+// Side / TimeInForce / ErrorCode (order-scoped; shared with transport wire).
 enum class Side {
     Unknown = 0,
     Buy,

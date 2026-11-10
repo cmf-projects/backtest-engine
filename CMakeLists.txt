@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.14)   # FetchContent_MakeAvailable
 
 project(cmf
   VERSION 1.0.0
-  DESCRIPTION "CMF venue driver and backtest app"
+  DESCRIPTION "Population venue (UDS + SPSC) and core"
   LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -13,20 +13,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "" FORCE)
 endif()
 
-# ---------------------------------------------------------------------------
-# asio, standalone
-# ---------------------------------------------------------------------------
-set(CMF_ASIO_TAG "asio-1-30-2" CACHE STRING "Git tag of the asio release to build against")
-
 include(FetchContent)
-
-FetchContent_Declare(asio
-  GIT_REPOSITORY https://github.com/chriskohlhoff/asio.git
-  GIT_TAG        ${CMF_ASIO_TAG}
-  GIT_SHALLOW    TRUE
-  GIT_PROGRESS   TRUE)
-
-FetchContent_MakeAvailable(asio)
 
 # ---------------------------------------------------------------------------
 # toml++
@@ -43,27 +30,8 @@ FetchContent_MakeAvailable(tomlplusplus)
 
 find_package(Threads REQUIRED)
 
-add_library(asio_standalone INTERFACE)
-add_library(cmf::asio ALIAS asio_standalone)
-
-target_include_directories(asio_standalone SYSTEM INTERFACE "${asio_SOURCE_DIR}/asio/include")
-target_compile_definitions(asio_standalone INTERFACE ASIO_STANDALONE ASIO_NO_DEPRECATED)
-target_link_libraries(asio_standalone INTERFACE Threads::Threads)
-
 # ---------------------------------------------------------------------------
-# Public protocol driver (header-only) — include/cmf/
-# ---------------------------------------------------------------------------
-add_library(cmf_driver INTERFACE)
-add_library(cmf::driver ALIAS cmf_driver)
-
-target_include_directories(cmf_driver INTERFACE
-  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>")
-target_link_libraries(cmf_driver INTERFACE cmf::asio)
-target_sources(cmf_driver INTERFACE
-  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/cmf/cmf_driver.hpp>")
-
-# ---------------------------------------------------------------------------
-# Venue library (private sources) — src/
+# Dataset + population core — src/
 # ---------------------------------------------------------------------------
 add_library(dataset_lib
   src/dataset/jsonl_tape.cc)
@@ -92,21 +60,6 @@ target_include_directories(population_lib
 target_compile_features(population_lib PUBLIC cxx_std_20)
 # dataset_lib adapts into population::Tape (headers only); link both at the app.
 
-add_library(venue_lib
-  src/config/config.cc
-  src/venue/venue.cc)
-add_library(cmf::venue ALIAS venue_lib)
-
-target_include_directories(venue_lib
-  PUBLIC
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>"
-  PRIVATE
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>")
-target_link_libraries(venue_lib PUBLIC cmf::driver PRIVATE tomlplusplus::tomlplusplus)
-
-# Population path is separate from CMF venue for now; link when the UDS app arrives.
-# target_link_libraries(venue_lib PUBLIC cmf::population)
-
 # ---------------------------------------------------------------------------
 # Transport — src/transport/ (UDS control + SPSC ring header)
 # ---------------------------------------------------------------------------
@@ -123,15 +76,11 @@ target_include_directories(transport_lib
   PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>")
 target_compile_features(transport_lib PUBLIC cxx_std_20)
-target_link_libraries(transport_lib PUBLIC cmf::population cmf::dataset)
+target_link_libraries(transport_lib PUBLIC cmf::population cmf::dataset Threads::Threads)
 
 # ---------------------------------------------------------------------------
-# App entrypoints
+# Population venue app
 # ---------------------------------------------------------------------------
-add_executable(backtest apps/backtest/main.cc)
-target_link_libraries(backtest PRIVATE cmf::venue)
-
-# Population UDS venue (in-process SPSC; shm later). CMF `backtest` untouched.
 add_library(population_venue_lib
   src/population_venue/config/config.cc
   src/population_venue/app/app.cc)
@@ -202,8 +151,6 @@ if(MSVC)
   target_compile_options(dataset_lib PRIVATE /W4)
   target_compile_options(population_lib PRIVATE /W4)
   target_compile_options(transport_lib PRIVATE /W4)
-  target_compile_options(venue_lib PRIVATE /W4)
-  target_compile_options(backtest PRIVATE /W4)
   target_compile_options(population_venue_lib PRIVATE /W4)
   target_compile_options(population_venue PRIVATE /W4)
   target_compile_options(population_smoke PRIVATE /W4)
@@ -215,8 +162,6 @@ else()
   target_compile_options(dataset_lib PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(population_lib PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(transport_lib PRIVATE -Wall -Wextra -Wpedantic)
-  target_compile_options(venue_lib PRIVATE -Wall -Wextra -Wpedantic)
-  target_compile_options(backtest PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(population_venue_lib PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(population_venue PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(population_smoke PRIVATE -Wall -Wextra -Wpedantic)

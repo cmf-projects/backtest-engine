@@ -1,7 +1,7 @@
 #pragma once
 
 // Logical messages on the population SPSC pair (not UDS).
-// docs/POPULATION_TZ.md §5.2–5.3; shapes mirror protos/messages.proto
+// docs/POPULATION_TZ.md §5.2–5.3; wire shapes for UDS/SPSC binary framing.
 
 #include "transport/control.hpp"
 

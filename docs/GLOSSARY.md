@@ -1,7 +1,6 @@
 # Population venue glossary
 
-Terms for the multi-strategy backtest path. Keep these distinct from the CMF
-TCP protocol vocabulary in [`TASK.md`](TASK.md) / [`CONTEXT.md`](CONTEXT.md).
+Terms for the multi-strategy population venue path (UDS + SPSC).
 
 ## Population model
 
@@ -87,9 +86,8 @@ File tape is shared; fills on slot A never change file book or slot B’s effect
 | **`cl_id`** | Opaque engine transaction id; echo only. | `slot_id` |
 | **`K`** | Account ready / run origin stamp. | Opening a population |
 
-One CMF session = at most one population with one slot (compatibility adapter).
-Many populations use **UDS Open + SPSC pairs** (message schema may still live in
-`protos/` **without** a gRPC runtime), not a second pair of CMF ports.
+Many populations share one long-lived **UDS** control socket; each create gets its
+own **SPSC pair**. Message shapes live in `src/transport/` (no protobuf/gRPC).
 
 ## Liquidity recovery
 

@@ -6,7 +6,7 @@
 
 namespace population {
 
-// Mirrors protos SlotConfig (Open). Immutable for the run after Open.
+// SlotConfig from Open. Immutable for the run after Open.
 struct SlotConfig {
     std::uint32_t slot_id = 0;
     std::uint64_t md_lag_ns = 0;
