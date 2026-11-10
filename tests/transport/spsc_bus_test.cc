@@ -7,10 +7,13 @@
 #include <numeric>
 
 using transport::AckStatus;
+using transport::BusAssetRole;
+using transport::BusComponent;
 using transport::BusError;
 using transport::BusMsgType;
 using transport::BusOpen;
 using transport::BusOpenAck;
+using transport::BusSlotConfig;
 using transport::BusTick;
 using transport::DecodeBusAdvance;
 using transport::DecodeBusClose;
@@ -44,8 +47,18 @@ TEST(SpscBus, OpenAckTickAdvanceEndRoundTrip) {
     ASSERT_TRUE(out.valid());
     ASSERT_TRUE(in.valid());
 
-    ASSERT_TRUE(in.TrySend(BusMsgType::Open,
-                           EncodeBusOpen(BusOpen{.population_id = "pop-1", .n_slots = 4})));
+    BusOpen open_msg{.population_id = "pop-1"};
+    open_msg.components.push_back(BusComponent{
+        .component_id = "SPOT",
+        .role = BusAssetRole::Spot,
+        .dataset_path = "x.jsonl",
+        .tick_size = "0.01",
+    });
+    for (std::uint32_t i = 0; i < 4; ++i) {
+        open_msg.slots.push_back(BusSlotConfig{
+            .slot_id = i + 1, .md_lag_ns = 0, .delta_ns = 1, .impact_lambda = "0"});
+    }
+    ASSERT_TRUE(in.TrySend(BusMsgType::Open, EncodeBusOpen(open_msg)));
     {
         BusMsgType type{};
         std::vector<std::uint8_t> payload;
@@ -54,11 +67,13 @@ TEST(SpscBus, OpenAckTickAdvanceEndRoundTrip) {
         BusOpen open;
         ASSERT_TRUE(DecodeBusOpen(payload.data(), payload.size(), open));
         EXPECT_EQ(open.population_id, "pop-1");
-        EXPECT_EQ(open.n_slots, 4u);
+        EXPECT_EQ(open.slots.size(), 4u);
     }
 
     ASSERT_TRUE(out.TrySend(BusMsgType::OpenAck, EncodeBusOpenAck(MakeBusOpenOk("pop-1", 4))));
-    ASSERT_TRUE(out.TrySend(BusMsgType::Tick, EncodeBusTick(BusTick{.pop_ts_ns = 100})));
+    BusTick tick_msg{.pop_ts_ns = 100};
+    tick_msg.slots.push_back({.slot_id = 1});
+    ASSERT_TRUE(out.TrySend(BusMsgType::Tick, EncodeBusTick(tick_msg)));
 
     {
         BusMsgType type{};
@@ -75,6 +90,8 @@ TEST(SpscBus, OpenAckTickAdvanceEndRoundTrip) {
         BusTick tick;
         ASSERT_TRUE(DecodeBusTick(payload.data(), payload.size(), tick));
         EXPECT_EQ(tick.pop_ts_ns, 100u);
+        ASSERT_EQ(tick.slots.size(), 1u);
+        EXPECT_EQ(tick.slots[0].slot_id, 1u);
     }
 
     ASSERT_TRUE(in.TrySend(BusMsgType::Advance, EncodeBusAdvance()));

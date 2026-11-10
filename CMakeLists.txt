@@ -166,6 +166,7 @@ if(CMF_BUILD_TESTS)
     tests/transport/uds_control_test.cc
     tests/transport/finish_session_test.cc
     tests/transport/spsc_bus_test.cc
+    tests/transport/bus_framing_test.cc
     tests/transport/population_session_test.cc)
   target_link_libraries(transport_tests PRIVATE
     cmf::transport

@@ -14,9 +14,12 @@
 #include <vector>
 
 using transport::AckStatus;
+using transport::BusAssetRole;
+using transport::BusComponent;
 using transport::BusMsgType;
 using transport::BusOpen;
 using transport::BusOpenAck;
+using transport::BusSlotConfig;
 using transport::BusTick;
 using transport::CreateQueues;
 using transport::BusOrdersAck;
@@ -70,6 +73,28 @@ bool RecvMessage(SpscBus& bus, BusMsgType& type, std::vector<std::uint8_t>& payl
     return false;
 }
 
+BusOpen MakeTestOpen(std::string population_id, std::uint32_t n_slots) {
+    BusOpen open;
+    open.population_id = std::move(population_id);
+    open.components.push_back(BusComponent{
+        .component_id = "SPOT",
+        .role = BusAssetRole::Spot,
+        .dataset_path = "/tmp/stub.jsonl",
+        .class_code = "TQBR",
+        .sec_code = "SBER",
+        .tick_size = "0.01",
+    });
+    for (std::uint32_t i = 0; i < n_slots; ++i) {
+        open.slots.push_back(BusSlotConfig{
+            .slot_id = i + 1,
+            .md_lag_ns = 0,
+            .delta_ns = 1,
+            .impact_lambda = "0",
+        });
+    }
+    return open;
+}
+
 }  // namespace
 
 TEST(PopulationSession, NormalOpenTickAdvanceEnd) {
@@ -111,8 +136,7 @@ TEST(PopulationSession, NormalOpenTickAdvanceEnd) {
         SpscBus out(registry.FindOut(ack.out_queue));
         SpscBus in(registry.FindIn(ack.in_queue));
 
-        if (!in.TrySend(BusMsgType::Open,
-                        EncodeBusOpen(BusOpen{.population_id = "pop-n", .n_slots = 2}))) {
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(MakeTestOpen("pop-n", 2)))) {
             return;
         }
 
@@ -131,7 +155,8 @@ TEST(PopulationSession, NormalOpenTickAdvanceEnd) {
             return;
         }
         BusTick tick;
-        if (!DecodeBusTick(payload.data(), payload.size(), tick) || tick.pop_ts_ns != 1u) {
+        if (!DecodeBusTick(payload.data(), payload.size(), tick) || tick.pop_ts_ns != 1u ||
+            tick.slots.size() != 2u) {
             return;
         }
 
@@ -197,8 +222,7 @@ TEST(PopulationSession, OpenTickOrdersThenAdvanceEnd) {
         SpscBus out(registry.FindOut(ack.out_queue));
         SpscBus in(registry.FindIn(ack.in_queue));
 
-        if (!in.TrySend(BusMsgType::Open,
-                        EncodeBusOpen(BusOpen{.population_id = "pop-o", .n_slots = 1}))) {
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(MakeTestOpen("pop-o", 1)))) {
             return;
         }
 
@@ -282,8 +306,7 @@ TEST(PopulationSession, ClientCloseAfterTick) {
         SpscBus out(registry.FindOut(ack.out_queue));
         SpscBus in(registry.FindIn(ack.in_queue));
 
-        if (!in.TrySend(BusMsgType::Open,
-                        EncodeBusOpen(BusOpen{.population_id = "pop-c", .n_slots = 1}))) {
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(MakeTestOpen("pop-c", 1)))) {
             return;
         }
 

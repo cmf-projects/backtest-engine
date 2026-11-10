@@ -3,6 +3,7 @@
 // Venue-side population run over an existing UDS + SPSC pair (stub population).
 // docs/POPULATION_TZ.md §5.3–5.5; IMPL 1.2
 
+#include "transport/bus_messages.hpp"
 #include "transport/control.hpp"
 #include "transport/queue_registry.hpp"
 #include "transport/spsc_bus.hpp"
@@ -72,6 +73,7 @@ private:
     SessionPhase phase_ = SessionPhase::AwaitOpen;
     std::uint32_t ticks_sent_ = 0;
     std::uint32_t n_slots_ = 0;
+    std::vector<BusSlotConfig> slots_;  // from Open; stub Tick emits one row per slot
 };
 
 }  // namespace transport

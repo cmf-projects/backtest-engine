@@ -87,24 +87,32 @@ PopulationSession::Step PopulationSession::OnOpen(BusMsgType type,
                         /*close_already_seen=*/true);
     }
     BusOpen open;
+    std::string why;
     if (!DecodeBusOpen(payload.data(), payload.size(), open) ||
-        open.population_id != cfg_.population_id || open.n_slots == 0) {
+        open.population_id != cfg_.population_id || !ValidateBusOpen(open, why)) {
         (void)SendOut(BusMsgType::OpenAck,
                       EncodeBusOpenAck(MakeBusOpenReject(cfg_.population_id, ErrorCode::Internal,
-                                                         "bad Open")));
-        return FinishFatal(ErrorCode::Internal, "bad Open", false);
+                                                         why.empty() ? "bad Open" : why)));
+        return FinishFatal(ErrorCode::Internal, why.empty() ? "bad Open" : why, false);
     }
-    n_slots_ = open.n_slots;
+    slots_ = open.slots;
+    n_slots_ = static_cast<std::uint32_t>(slots_.size());
     if (!SendOut(BusMsgType::OpenAck,
                  EncodeBusOpenAck(MakeBusOpenOk(cfg_.population_id, n_slots_)))) {
         return FinishFatal(ErrorCode::Internal, "OpenAck send failed", false);
     }
-    BusTick tick{.pop_ts_ns = 1};
+    BusTick tick;
+    tick.pop_ts_ns = 1;
+    tick.slots.reserve(slots_.size());
+    for (const auto& slot : slots_) {
+        BusSlotTick row;
+        row.slot_id = slot.slot_id;
+        tick.slots.push_back(std::move(row));
+    }
     if (!SendOut(BusMsgType::Tick, EncodeBusTick(tick))) {
         return FinishFatal(ErrorCode::Internal, "Tick send failed", false);
     }
     ++ticks_sent_;
-    // Tick sent → wait for client OrderBatch | Advance. Never Tick-after-Tick here.
     phase_ = SessionPhase::AwaitOrderOrAdvance;
     return std::nullopt;
 }
@@ -147,8 +155,14 @@ PopulationSession::Step PopulationSession::OnAdvance(BusMsgType type,
         }
         return FinishOk(ErrorCode::Unspecified, "tape end", false);
     }
-    // Next Tick only after Advance — never back-to-back Ticks.
-    BusTick tick{.pop_ts_ns = static_cast<std::uint64_t>(ticks_sent_ + 1)};
+    BusTick tick;
+    tick.pop_ts_ns = static_cast<std::uint64_t>(ticks_sent_ + 1);
+    tick.slots.reserve(slots_.size());
+    for (const auto& slot : slots_) {
+        BusSlotTick row;
+        row.slot_id = slot.slot_id;
+        tick.slots.push_back(std::move(row));
+    }
     if (!SendOut(BusMsgType::Tick, EncodeBusTick(tick))) {
         return FinishFatal(ErrorCode::Internal, "Tick send failed", false);
     }

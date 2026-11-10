@@ -3,11 +3,132 @@
 #include "transport/wire_bytes.hpp"
 
 namespace transport {
+namespace {
+
+void AppendLevels(std::vector<std::uint8_t>& out, const std::vector<BusBookLevel>& levels) {
+    AppendU32(out, static_cast<std::uint32_t>(levels.size()));
+    for (const auto& lvl : levels) {
+        AppendString(out, lvl.price);
+        AppendU64(out, lvl.qty);
+    }
+}
+
+[[nodiscard]] bool ReadLevels(const std::uint8_t*& p, const std::uint8_t* end,
+                              std::vector<BusBookLevel>& levels) {
+    std::uint32_t n = 0;
+    if (!ReadU32(p, end, n)) {
+        return false;
+    }
+    levels.clear();
+    levels.reserve(n);
+    for (std::uint32_t i = 0; i < n; ++i) {
+        BusBookLevel lvl;
+        if (!ReadString(p, end, lvl.price) || !ReadU64(p, end, lvl.qty)) {
+            return false;
+        }
+        levels.push_back(std::move(lvl));
+    }
+    return true;
+}
+
+void AppendBookUpdate(std::vector<std::uint8_t>& out, const BusBookUpdate& book) {
+    AppendString(out, book.component_id);
+    out.push_back(static_cast<std::uint8_t>(book.kind));
+    AppendLevels(out, book.bids);
+    AppendLevels(out, book.asks);
+}
+
+[[nodiscard]] bool ReadBookUpdate(const std::uint8_t*& p, const std::uint8_t* end,
+                                  BusBookUpdate& book) {
+    if (!ReadString(p, end, book.component_id) || p >= end) {
+        return false;
+    }
+    book.kind = static_cast<BusBookPatchKind>(*p++);
+    return ReadLevels(p, end, book.bids) && ReadLevels(p, end, book.asks);
+}
+
+void AppendTrade(std::vector<std::uint8_t>& out, const BusTrade& trade) {
+    AppendU64(out, trade.client_order_id);
+    out.push_back(static_cast<std::uint8_t>(trade.exec_type));
+    AppendString(out, trade.component_id);
+    AppendString(out, trade.price);
+    AppendU64(out, trade.qty);
+    AppendU64(out, trade.leaves);
+}
+
+[[nodiscard]] bool ReadTrade(const std::uint8_t*& p, const std::uint8_t* end, BusTrade& trade) {
+    if (!ReadU64(p, end, trade.client_order_id) || p >= end) {
+        return false;
+    }
+    trade.exec_type = static_cast<BusExecType>(*p++);
+    return ReadString(p, end, trade.component_id) && ReadString(p, end, trade.price) &&
+           ReadU64(p, end, trade.qty) && ReadU64(p, end, trade.leaves);
+}
+
+void AppendSlotTick(std::vector<std::uint8_t>& out, const BusSlotTick& slot) {
+    AppendU32(out, slot.slot_id);
+    AppendU32(out, static_cast<std::uint32_t>(slot.books.size()));
+    for (const auto& book : slot.books) {
+        AppendBookUpdate(out, book);
+    }
+    AppendU32(out, static_cast<std::uint32_t>(slot.trades.size()));
+    for (const auto& trade : slot.trades) {
+        AppendTrade(out, trade);
+    }
+}
+
+[[nodiscard]] bool ReadSlotTick(const std::uint8_t*& p, const std::uint8_t* end, BusSlotTick& slot) {
+    std::uint32_t n_books = 0;
+    std::uint32_t n_trades = 0;
+    if (!ReadU32(p, end, slot.slot_id) || !ReadU32(p, end, n_books)) {
+        return false;
+    }
+    slot.books.clear();
+    slot.books.reserve(n_books);
+    for (std::uint32_t i = 0; i < n_books; ++i) {
+        BusBookUpdate book;
+        if (!ReadBookUpdate(p, end, book)) {
+            return false;
+        }
+        slot.books.push_back(std::move(book));
+    }
+    if (!ReadU32(p, end, n_trades)) {
+        return false;
+    }
+    slot.trades.clear();
+    slot.trades.reserve(n_trades);
+    for (std::uint32_t i = 0; i < n_trades; ++i) {
+        BusTrade trade;
+        if (!ReadTrade(p, end, trade)) {
+            return false;
+        }
+        slot.trades.push_back(std::move(trade));
+    }
+    return true;
+}
+
+}  // namespace
 
 std::vector<std::uint8_t> EncodeBusOpen(const BusOpen& msg) {
     std::vector<std::uint8_t> out;
     AppendString(out, msg.population_id);
-    AppendU32(out, msg.n_slots);
+    AppendU32(out, msg.tape_stride);
+    AppendU32(out, static_cast<std::uint32_t>(msg.components.size()));
+    for (const auto& c : msg.components) {
+        AppendString(out, c.component_id);
+        out.push_back(static_cast<std::uint8_t>(c.role));
+        AppendString(out, c.dataset_path);
+        AppendString(out, c.class_code);
+        AppendString(out, c.sec_code);
+        AppendString(out, c.tick_size);
+    }
+    AppendU32(out, static_cast<std::uint32_t>(msg.slots.size()));
+    for (const auto& s : msg.slots) {
+        AppendU32(out, s.slot_id);
+        AppendU64(out, s.md_lag_ns);
+        AppendU64(out, s.delta_ns);
+        AppendString(out, s.impact_lambda);
+    }
     return out;
 }
 
@@ -15,7 +136,41 @@ bool DecodeBusOpen(const std::uint8_t* data, std::size_t size, BusOpen& out) {
     const std::uint8_t* p = data;
     const std::uint8_t* end = data + size;
     BusOpen tmp;
-    if (!ReadString(p, end, tmp.population_id) || !ReadU32(p, end, tmp.n_slots) || p != end) {
+    std::uint32_t n_comp = 0;
+    std::uint32_t n_slots = 0;
+    if (!ReadString(p, end, tmp.population_id) || !ReadU32(p, end, tmp.tape_stride) ||
+        !ReadU32(p, end, n_comp)) {
+        return false;
+    }
+    tmp.components.reserve(n_comp);
+    for (std::uint32_t i = 0; i < n_comp; ++i) {
+        BusComponent c;
+        if (p >= end) {
+            return false;
+        }
+        if (!ReadString(p, end, c.component_id) || p >= end) {
+            return false;
+        }
+        c.role = static_cast<BusAssetRole>(*p++);
+        if (!ReadString(p, end, c.dataset_path) || !ReadString(p, end, c.class_code) ||
+            !ReadString(p, end, c.sec_code) || !ReadString(p, end, c.tick_size)) {
+            return false;
+        }
+        tmp.components.push_back(std::move(c));
+    }
+    if (!ReadU32(p, end, n_slots)) {
+        return false;
+    }
+    tmp.slots.reserve(n_slots);
+    for (std::uint32_t i = 0; i < n_slots; ++i) {
+        BusSlotConfig s;
+        if (!ReadU32(p, end, s.slot_id) || !ReadU64(p, end, s.md_lag_ns) ||
+            !ReadU64(p, end, s.delta_ns) || !ReadString(p, end, s.impact_lambda)) {
+            return false;
+        }
+        tmp.slots.push_back(std::move(s));
+    }
+    if (p != end) {
         return false;
     }
     out = std::move(tmp);
@@ -54,6 +209,14 @@ bool DecodeBusOpenAck(const std::uint8_t* data, std::size_t size, BusOpenAck& ou
 std::vector<std::uint8_t> EncodeBusTick(const BusTick& msg) {
     std::vector<std::uint8_t> out;
     AppendU64(out, msg.pop_ts_ns);
+    AppendU32(out, static_cast<std::uint32_t>(msg.books.size()));
+    for (const auto& book : msg.books) {
+        AppendBookUpdate(out, book);
+    }
+    AppendU32(out, static_cast<std::uint32_t>(msg.slots.size()));
+    for (const auto& slot : msg.slots) {
+        AppendSlotTick(out, slot);
+    }
     return out;
 }
 
@@ -61,10 +224,34 @@ bool DecodeBusTick(const std::uint8_t* data, std::size_t size, BusTick& out) {
     const std::uint8_t* p = data;
     const std::uint8_t* end = data + size;
     BusTick tmp;
-    if (!ReadU64(p, end, tmp.pop_ts_ns) || p != end) {
+    std::uint32_t n_books = 0;
+    std::uint32_t n_slots = 0;
+    if (!ReadU64(p, end, tmp.pop_ts_ns) || !ReadU32(p, end, n_books)) {
         return false;
     }
-    out = tmp;
+    tmp.books.reserve(n_books);
+    for (std::uint32_t i = 0; i < n_books; ++i) {
+        BusBookUpdate book;
+        if (!ReadBookUpdate(p, end, book)) {
+            return false;
+        }
+        tmp.books.push_back(std::move(book));
+    }
+    if (!ReadU32(p, end, n_slots)) {
+        return false;
+    }
+    tmp.slots.reserve(n_slots);
+    for (std::uint32_t i = 0; i < n_slots; ++i) {
+        BusSlotTick slot;
+        if (!ReadSlotTick(p, end, slot)) {
+            return false;
+        }
+        tmp.slots.push_back(std::move(slot));
+    }
+    if (p != end) {
+        return false;
+    }
+    out = std::move(tmp);
     return true;
 }
 

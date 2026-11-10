@@ -22,6 +22,7 @@ enum class ErrorCode : std::uint32_t {
 };
 
 enum class AckStatus : std::uint8_t {
+    Unspecified = 0,  // invalid; treat as Error
     Ok = 1,
     Error = 2,
 };
