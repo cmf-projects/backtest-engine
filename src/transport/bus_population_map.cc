@@ -1,7 +1,8 @@
 #include "transport/bus_population_map.hpp"
 
+#include "population/price_ticks.hpp"
+
 #include <cmath>
-#include <cstdio>
 
 namespace transport {
 namespace {
@@ -54,12 +55,22 @@ namespace {
     return BusExecType::Unspecified;
 }
 
-void AppendLevelsInto(std::vector<BusBookLevel>& out, const std::vector<population::Level>& in) {
+[[nodiscard]] double TickSizeOr(const TickSizeByComponent& tick_sizes,
+                                const std::string& component_id) {
+    const auto it = tick_sizes.find(component_id);
+    if (it == tick_sizes.end() || !(it->second > 0.0)) {
+        return 0.01;
+    }
+    return it->second;
+}
+
+void AppendLevelsInto(std::vector<BusBookLevel>& out, const std::vector<population::Level>& in,
+                      double tick_size) {
     if (out.size() != in.size()) {
         out.resize(in.size());
     }
     for (std::size_t i = 0; i < in.size(); ++i) {
-        FormatDecimalInto(in[i].price, out[i].price);
+        out[i].price = ToBusPrice(in[i].price, tick_size);
         out[i].qty = in[i].qty;
     }
 }
@@ -83,20 +94,13 @@ bool ParseDecimal(const std::string& text, double& out) {
     }
 }
 
-void FormatDecimalInto(double value, std::string& out) {
-    char buf[64];
-    const int n = std::snprintf(buf, sizeof(buf), "%.15g", value);
-    if (n <= 0 || static_cast<std::size_t>(n) >= sizeof(buf)) {
-        out.clear();
-        return;
-    }
-    out.assign(buf, static_cast<std::size_t>(n));
+BusPrice ToBusPrice(double price, double tick_size) {
+    const auto wf = population::PriceToWholeFrac(price, tick_size);
+    return BusPrice{.whole = wf.whole, .frac = wf.frac};
 }
 
-std::string FormatDecimal(double value) {
-    std::string out;
-    FormatDecimalInto(value, out);
-    return out;
+double FromBusPrice(const BusPrice& px, double tick_size) {
+    return population::WholeFracToPrice(px.whole, px.frac, tick_size);
 }
 
 population::SlotConfig ToSlotConfig(const BusSlotConfig& in) {
@@ -119,7 +123,8 @@ std::vector<population::SlotConfig> ToSlotConfigs(const std::vector<BusSlotConfi
     return out;
 }
 
-void ToOrderBatchInto(const BusOrderBatch& in, population::OrderBatch& out) {
+void ToOrderBatchInto(const BusOrderBatch& in, population::OrderBatch& out,
+                      const TickSizeByComponent& tick_sizes) {
     if (out.orders.size() != in.orders.size()) {
         out.orders.resize(in.orders.size());
     }
@@ -132,9 +137,7 @@ void ToOrderBatchInto(const BusOrderBatch& in, population::OrderBatch& out) {
         n.side = ToSide(o.side);
         n.tif = ToTif(o.tif);
         n.qty = o.qty;
-        if (!ParseDecimal(o.price, n.price)) {
-            n.price = 0.0;
-        }
+        n.price = FromBusPrice(o.price, TickSizeOr(tick_sizes, o.component_id));
     }
     if (out.cancels.size() != in.cancels.size()) {
         out.cancels.resize(in.cancels.size());
@@ -145,13 +148,15 @@ void ToOrderBatchInto(const BusOrderBatch& in, population::OrderBatch& out) {
     }
 }
 
-population::OrderBatch ToOrderBatch(const BusOrderBatch& in) {
+population::OrderBatch ToOrderBatch(const BusOrderBatch& in,
+                                    const TickSizeByComponent& tick_sizes) {
     population::OrderBatch out;
-    ToOrderBatchInto(in, out);
+    ToOrderBatchInto(in, out, tick_sizes);
     return out;
 }
 
-void ToBusTickInto(const population::TickView& in, BusTick& out) {
+void ToBusTickInto(const population::TickView& in, BusTick& out,
+                   const TickSizeByComponent& tick_sizes) {
     out.pop_ts_ns = in.pop_ts_ns;
     if (out.books.size() != in.books.size()) {
         out.books.resize(in.books.size());
@@ -161,8 +166,9 @@ void ToBusTickInto(const population::TickView& in, BusTick& out) {
         BusBookUpdate& u = out.books[i];
         u.component_id = book.component_id;
         u.kind = ToBusPatchKind(book.kind);
-        AppendLevelsInto(u.bids, book.bids);
-        AppendLevelsInto(u.asks, book.asks);
+        const double ts = TickSizeOr(tick_sizes, book.component_id);
+        AppendLevelsInto(u.bids, book.bids, ts);
+        AppendLevelsInto(u.asks, book.asks, ts);
     }
     if (out.slots.size() != in.slots.size()) {
         out.slots.resize(in.slots.size());
@@ -179,8 +185,9 @@ void ToBusTickInto(const population::TickView& in, BusTick& out) {
             BusBookUpdate& u = st.books[bi];
             u.component_id = book.component_id;
             u.kind = ToBusPatchKind(book.kind);
-            AppendLevelsInto(u.bids, book.bids);
-            AppendLevelsInto(u.asks, book.asks);
+            const double ts = TickSizeOr(tick_sizes, book.component_id);
+            AppendLevelsInto(u.bids, book.bids, ts);
+            AppendLevelsInto(u.asks, book.asks, ts);
         }
         if (st.trades.size() != slot.trades.size()) {
             st.trades.resize(slot.trades.size());
@@ -191,16 +198,20 @@ void ToBusTickInto(const population::TickView& in, BusTick& out) {
             tr.client_order_id = trade.client_order_id;
             tr.exec_type = ToBusExec(trade.exec_type);
             tr.component_id = trade.component_id;
-            FormatDecimalInto(trade.price, tr.price);
+            if (trade.exec_type == population::ExecType::Cancel || trade.price == 0.0) {
+                tr.price = {};
+            } else {
+                tr.price = ToBusPrice(trade.price, TickSizeOr(tick_sizes, trade.component_id));
+            }
             tr.qty = trade.qty;
             tr.leaves = trade.leaves;
         }
     }
 }
 
-BusTick ToBusTick(const population::TickView& in) {
+BusTick ToBusTick(const population::TickView& in, const TickSizeByComponent& tick_sizes) {
     BusTick out;
-    ToBusTickInto(in, out);
+    ToBusTickInto(in, out, tick_sizes);
     return out;
 }
 

@@ -25,6 +25,10 @@ inline void AppendU64(std::vector<std::uint8_t>& out, std::uint64_t v) {
     }
 }
 
+inline void AppendI64(std::vector<std::uint8_t>& out, std::int64_t v) {
+    AppendU64(out, static_cast<std::uint64_t>(v));
+}
+
 [[nodiscard]] inline bool ReadU32(const std::uint8_t*& p, const std::uint8_t* end,
                                   std::uint32_t& v) {
     if (static_cast<std::size_t>(end - p) < 4) {
@@ -46,6 +50,16 @@ inline void AppendU64(std::vector<std::uint8_t>& out, std::uint64_t v) {
         v |= static_cast<std::uint64_t>(p[i]) << (8 * i);
     }
     p += 8;
+    return true;
+}
+
+[[nodiscard]] inline bool ReadI64(const std::uint8_t*& p, const std::uint8_t* end,
+                                  std::int64_t& v) {
+    std::uint64_t u = 0;
+    if (!ReadU64(p, end, u)) {
+        return false;
+    }
+    v = static_cast<std::int64_t>(u);
     return true;
 }
 

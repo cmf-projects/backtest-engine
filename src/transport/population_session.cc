@@ -104,13 +104,15 @@ PopulationSession::Step PopulationSession::SendTickFromPopulation() {
     if (pop_ == nullptr) {
         return FinishFatal(ErrorCode::Internal, "no population", false);
     }
-    ToBusTickInto(pop_->MakeTick(), tick_buf_);
+    ToBusTickInto(pop_->MakeTick(), tick_buf_, tick_sizes_);
 #if SPDLOG_ACTIVE_LEVEL <= SPDLOG_LEVEL_TRACE
     for (const auto& slot : tick_buf_.slots) {
         for (const auto& tr : slot.trades) {
-            LOG_TRACE("fill pop_ts={} slot={} oid={} comp={} px={} qty={} leaves={} exec={}",
-                      tick_buf_.pop_ts_ns, slot.slot_id, tr.client_order_id, tr.component_id,
-                      tr.price, tr.qty, tr.leaves, static_cast<unsigned>(tr.exec_type));
+            LOG_TRACE(
+                "fill pop_ts={} slot={} oid={} comp={} px={}+{} qty={} leaves={} exec={}",
+                tick_buf_.pop_ts_ns, slot.slot_id, tr.client_order_id, tr.component_id,
+                tr.price.whole, tr.price.frac, tr.qty, tr.leaves,
+                static_cast<unsigned>(tr.exec_type));
         }
     }
     LOG_TRACE("tick pop_ts={} slots={} books_shared={}", tick_buf_.pop_ts_ns, tick_buf_.slots.size(),
@@ -136,6 +138,7 @@ PopulationSession::Step PopulationSession::OnOpen(const std::vector<std::uint8_t
         return FinishFatal(ErrorCode::Internal, why.empty() ? "bad Open" : why, false);
     }
     try {
+        tick_sizes_.clear();
         std::vector<population::ComponentSpec> specs;
         specs.reserve(open.components.size());
         for (const BusComponent& component : open.components) {
@@ -143,6 +146,7 @@ PopulationSession::Step PopulationSession::OnOpen(const std::vector<std::uint8_t
             if (!ParseDecimal(component.tick_size, tick_size) || !(tick_size > 0.0)) {
                 throw std::runtime_error("bad tick_size");
             }
+            tick_sizes_[component.component_id] = tick_size;
             auto tape = MakeTape(component);
             if (tape == nullptr) {
                 throw std::runtime_error("make_tape returned null");
@@ -178,7 +182,7 @@ PopulationSession::Step PopulationSession::OnOrders(const std::vector<std::uint8
         return FinishFatal(ErrorCode::Internal, "no population", false);
     }
 
-    ToOrderBatchInto(order_batch_buf_, domain_batch_);
+    ToOrderBatchInto(order_batch_buf_, domain_batch_, tick_sizes_);
     const population::OrderBatchResult& result = pop_->Submit(domain_batch_);
     if (result.HasFailure()) {
         EncodeBusOrdersAckInto(MakeOrdersAckReject(ErrorCode::Internal, "bad orders"),
@@ -189,9 +193,9 @@ PopulationSession::Step PopulationSession::OnOrders(const std::vector<std::uint8
     }
 #if SPDLOG_ACTIVE_LEVEL <= SPDLOG_LEVEL_TRACE
     for (const auto& o : order_batch_buf_.orders) {
-        LOG_TRACE("submit oid={} slot={} comp={} side={} px={} qty={} tif={}", o.client_order_id,
-                  o.slot_id, o.component_id, static_cast<unsigned>(o.side), o.price, o.qty,
-                  static_cast<unsigned>(o.tif));
+        LOG_TRACE("submit oid={} slot={} comp={} side={} px={}+{} qty={} tif={}",
+                  o.client_order_id, o.slot_id, o.component_id, static_cast<unsigned>(o.side),
+                  o.price.whole, o.price.frac, o.qty, static_cast<unsigned>(o.tif));
     }
     LOG_TRACE("submit ok orders={} cancels={}", order_batch_buf_.orders.size(),
               order_batch_buf_.cancels.size());

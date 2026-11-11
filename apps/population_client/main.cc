@@ -43,6 +43,7 @@ using transport::BusOpenAck;
 using transport::BusOrder;
 using transport::BusOrderBatch;
 using transport::BusOrdersAck;
+using transport::BusPrice;
 using transport::BusRecvResult;
 using transport::BusSide;
 using transport::BusSlotConfig;
@@ -70,7 +71,7 @@ struct PendingOrder {
     std::uint64_t submit_pop_ts_ns = 0;
     std::string component_id;
     BusSide side = BusSide::Unspecified;
-    std::string price;
+    BusPrice price;
 };
 
 // Monotonic client_order_id → slot; no per-insert heap nodes.
@@ -246,7 +247,7 @@ void MakeTakeBatch(const BusTick& tick, std::uint64_t& next_oid, DensePending& p
     }
     const std::uint32_t slot_id = tick.slots.empty() ? 1u : tick.slots[0].slot_id;
 
-    auto push = [&](BusSide side, const BusBookUpdate& book, const std::string& px) {
+    auto push = [&](BusSide side, const BusBookUpdate& book, const BusPrice& px) {
         const std::uint64_t oid = next_oid++;
         batch.orders.push_back(BusOrder{
             .slot_id = slot_id,
@@ -265,10 +266,8 @@ void MakeTakeBatch(const BusTick& tick, std::uint64_t& next_oid, DensePending& p
                          });
     };
 
-    auto price_ok = [](const std::string& px) {
-        char* end = nullptr;
-        const double v = std::strtod(px.c_str(), &end);
-        return end != px.c_str() && v > 0.0;
+    auto price_ok = [](const BusPrice& px) {
+        return px.whole > 0 || px.frac > 0;
     };
 
     for (const BusBookUpdate* book : books) {

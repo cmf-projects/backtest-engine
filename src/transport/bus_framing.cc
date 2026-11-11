@@ -21,10 +21,19 @@ void ResizeWithPool(std::vector<T>& v, std::uint32_t n, std::vector<T>& pool) {
     }
 }
 
+void AppendPrice(std::vector<std::uint8_t>& out, const BusPrice& px) {
+    AppendI64(out, px.whole);
+    AppendI64(out, px.frac);
+}
+
+[[nodiscard]] bool ReadPrice(const std::uint8_t*& p, const std::uint8_t* end, BusPrice& px) {
+    return ReadI64(p, end, px.whole) && ReadI64(p, end, px.frac);
+}
+
 void AppendLevels(std::vector<std::uint8_t>& out, const std::vector<BusBookLevel>& levels) {
     AppendU32(out, static_cast<std::uint32_t>(levels.size()));
     for (const auto& lvl : levels) {
-        AppendString(out, lvl.price);
+        AppendPrice(out, lvl.price);
         AppendU64(out, lvl.qty);
     }
 }
@@ -47,7 +56,7 @@ void AppendLevels(std::vector<std::uint8_t>& out, const std::vector<BusBookLevel
         levels.resize(n);
     }
     for (std::uint32_t i = 0; i < n; ++i) {
-        if (!ReadString(p, end, levels[i].price) || !ReadU64(p, end, levels[i].qty)) {
+        if (!ReadPrice(p, end, levels[i].price) || !ReadU64(p, end, levels[i].qty)) {
             return false;
         }
     }
@@ -74,7 +83,7 @@ void AppendTrade(std::vector<std::uint8_t>& out, const BusTrade& trade) {
     AppendU64(out, trade.client_order_id);
     out.push_back(static_cast<std::uint8_t>(trade.exec_type));
     AppendString(out, trade.component_id);
-    AppendString(out, trade.price);
+    AppendPrice(out, trade.price);
     AppendU64(out, trade.qty);
     AppendU64(out, trade.leaves);
 }
@@ -84,7 +93,7 @@ void AppendTrade(std::vector<std::uint8_t>& out, const BusTrade& trade) {
         return false;
     }
     trade.exec_type = static_cast<BusExecType>(*p++);
-    return ReadString(p, end, trade.component_id) && ReadString(p, end, trade.price) &&
+    return ReadString(p, end, trade.component_id) && ReadPrice(p, end, trade.price) &&
            ReadU64(p, end, trade.qty) && ReadU64(p, end, trade.leaves);
 }
 
@@ -287,7 +296,7 @@ void EncodeBusOrderBatchInto(const BusOrderBatch& msg, std::vector<std::uint8_t>
         AppendU64(out, o.client_order_id);
         AppendString(out, o.component_id);
         out.push_back(static_cast<std::uint8_t>(o.side));
-        AppendString(out, o.price);
+        AppendPrice(out, o.price);
         AppendU64(out, o.qty);
         out.push_back(static_cast<std::uint8_t>(o.tif));
     }
@@ -322,7 +331,7 @@ bool DecodeBusOrderBatch(const std::uint8_t* data, std::size_t size, BusOrderBat
             return false;
         }
         o.side = static_cast<BusSide>(*p++);
-        if (!ReadString(p, end, o.price) || !ReadU64(p, end, o.qty) || p >= end) {
+        if (!ReadPrice(p, end, o.price) || !ReadU64(p, end, o.qty) || p >= end) {
             return false;
         }
         o.tif = static_cast<BusTimeInForce>(*p++);

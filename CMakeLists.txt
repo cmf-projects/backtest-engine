@@ -182,7 +182,8 @@ if(CMF_BUILD_TESTS)
     tests/population/merged_tape_test.cc
     tests/population/order_submit_test.cc
     tests/population/match_test.cc
-    tests/population/impact_test.cc)
+    tests/population/impact_test.cc
+    tests/population/price_ticks_test.cc)
   target_include_directories(population_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/population")
   target_link_libraries(population_tests PRIVATE
@@ -199,6 +200,7 @@ if(CMF_BUILD_TESTS)
     tests/transport/finish_session_test.cc
     tests/transport/spsc_bus_test.cc
     tests/transport/bus_framing_test.cc
+    tests/transport/bus_price_test.cc
     tests/transport/population_session_test.cc)
   target_include_directories(transport_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/population")

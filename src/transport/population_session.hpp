@@ -6,6 +6,7 @@
 #include "population/population.hpp"
 #include "population/tape.hpp"
 #include "transport/bus_messages.hpp"
+#include "transport/bus_population_map.hpp"
 #include "transport/control.hpp"
 #include "transport/queue_registry.hpp"
 #include "transport/spsc_bus.hpp"
@@ -85,6 +86,7 @@ private:
     BusTick tick_buf_;                      // reused by ToBusTickInto
     BusOrderBatch order_batch_buf_;         // reused by OnOrders decode
     population::OrderBatch domain_batch_;   // reused by ToOrderBatchInto
+    TickSizeByComponent tick_sizes_;        // from Open.components; wire price grid
 };
 
 }  // namespace transport

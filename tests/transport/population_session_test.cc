@@ -29,6 +29,7 @@ using transport::BusOpenAck;
 using transport::BusOrder;
 using transport::BusOrderBatch;
 using transport::BusOrdersAck;
+using transport::BusPrice;
 using transport::BusSide;
 using transport::BusSlotConfig;
 using transport::BusTick;
@@ -288,7 +289,7 @@ TEST(PopulationSession, SubmitOrderThenAdvance) {
             .client_order_id = 7,
             .component_id = "SPOT",
             .side = BusSide::Buy,
-            .price = "100.00",
+            .price = BusPrice{.whole = 100, .frac = 0},
             .qty = 1,
             .tif = BusTimeInForce::Day,
         });
@@ -805,7 +806,7 @@ TEST(PopulationSession, BadOrderBatchUnknownSlotIsFatal) {
             .client_order_id = 1,
             .component_id = "SPOT",
             .side = BusSide::Buy,
-            .price = "100.00",
+            .price = BusPrice{.whole = 100, .frac = 0},
             .qty = 1,
             .tif = BusTimeInForce::Day,
         });
@@ -900,7 +901,7 @@ TEST(PopulationSession, TruncatedOrderBatchIsFatal) {
             .client_order_id = 1,
             .component_id = "SPOT",
             .side = BusSide::Buy,
-            .price = "100.00",
+            .price = BusPrice{.whole = 100, .frac = 0},
             .qty = 1,
             .tif = BusTimeInForce::Day,
         });

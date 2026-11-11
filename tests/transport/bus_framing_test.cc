@@ -12,6 +12,7 @@ using transport::BusExecType;
 using transport::BusOpen;
 using transport::BusOrder;
 using transport::BusOrderBatch;
+using transport::BusPrice;
 using transport::BusSide;
 using transport::BusSlotConfig;
 using transport::BusSlotTick;
@@ -86,27 +87,32 @@ TEST(BusFraming, OpenRejectsBadDelta) {
 }
 
 TEST(BusFraming, TickRoundTripWithBooksAndTrades) {
+    // tick_size 0.01 → "100.5" = whole 100 + frac 50
+    constexpr BusPrice k100_5{.whole = 100, .frac = 50};
+    constexpr BusPrice k100{.whole = 100, .frac = 0};
+    constexpr BusPrice k101{.whole = 101, .frac = 0};
+
     BusTick tick;
     tick.pop_ts_ns = 42;
     tick.books.push_back(BusBookUpdate{
         .component_id = "SPOT",
         .kind = BusBookPatchKind::Keyframe,
-        .bids = {{.price = "100.5", .qty = 10}, {.price = "100.0", .qty = 5}},
-        .asks = {{.price = "101.0", .qty = 7}},
+        .bids = {{.price = k100_5, .qty = 10}, {.price = k100, .qty = 5}},
+        .asks = {{.price = k101, .qty = 7}},
     });
     BusSlotTick slot;
     slot.slot_id = 7;
     slot.books.push_back(BusBookUpdate{
         .component_id = "SPOT",
         .kind = BusBookPatchKind::Diff,
-        .bids = {{.price = "100.5", .qty = 9}},
+        .bids = {{.price = k100_5, .qty = 9}},
         .asks = {},
     });
     slot.trades.push_back(BusTrade{
         .client_order_id = 99,
         .exec_type = BusExecType::Fill,
         .component_id = "SPOT",
-        .price = "100.5",
+        .price = k100_5,
         .qty = 1,
         .leaves = 0,
     });
@@ -119,7 +125,7 @@ TEST(BusFraming, TickRoundTripWithBooksAndTrades) {
     ASSERT_EQ(got.books.size(), 1u);
     EXPECT_EQ(got.books[0].kind, BusBookPatchKind::Keyframe);
     ASSERT_EQ(got.books[0].bids.size(), 2u);
-    EXPECT_EQ(got.books[0].bids[0].price, "100.5");
+    EXPECT_EQ(got.books[0].bids[0].price, k100_5);
     ASSERT_EQ(got.slots.size(), 1u);
     EXPECT_EQ(got.slots[0].slot_id, 7u);
     ASSERT_EQ(got.slots[0].books.size(), 1u);
@@ -127,6 +133,7 @@ TEST(BusFraming, TickRoundTripWithBooksAndTrades) {
     ASSERT_EQ(got.slots[0].trades.size(), 1u);
     EXPECT_EQ(got.slots[0].trades[0].client_order_id, 99u);
     EXPECT_EQ(got.slots[0].trades[0].exec_type, BusExecType::Fill);
+    EXPECT_EQ(got.slots[0].trades[0].price, k100_5);
     EXPECT_EQ(got.slots[0].trades[0].qty, 1u);
 }
 
@@ -140,13 +147,16 @@ TEST(BusFraming, OrderBatchRoundTripEmpty) {
 }
 
 TEST(BusFraming, OrderBatchRoundTripOrdersAndCancels) {
+    constexpr BusPrice k100_5{.whole = 100, .frac = 50};  // tick 0.01
+    constexpr BusPrice k25000{.whole = 25000, .frac = 0};  // tick 1
+
     BusOrderBatch batch;
     batch.orders.push_back(BusOrder{
         .slot_id = 1,
         .client_order_id = 42,
         .component_id = "SPOT",
         .side = BusSide::Buy,
-        .price = "100.5",
+        .price = k100_5,
         .qty = 10,
         .tif = BusTimeInForce::Day,
     });
@@ -155,7 +165,7 @@ TEST(BusFraming, OrderBatchRoundTripOrdersAndCancels) {
         .client_order_id = 43,
         .component_id = "FUT",
         .side = BusSide::Sell,
-        .price = "25000",
+        .price = k25000,
         .qty = 1,
         .tif = BusTimeInForce::Ioc,
     });
@@ -170,10 +180,11 @@ TEST(BusFraming, OrderBatchRoundTripOrdersAndCancels) {
     EXPECT_EQ(got.orders[0].client_order_id, 42u);
     EXPECT_EQ(got.orders[0].component_id, "SPOT");
     EXPECT_EQ(got.orders[0].side, BusSide::Buy);
-    EXPECT_EQ(got.orders[0].price, "100.5");
+    EXPECT_EQ(got.orders[0].price, k100_5);
     EXPECT_EQ(got.orders[0].qty, 10u);
     EXPECT_EQ(got.orders[0].tif, BusTimeInForce::Day);
     EXPECT_EQ(got.orders[1].side, BusSide::Sell);
+    EXPECT_EQ(got.orders[1].price, k25000);
     EXPECT_EQ(got.orders[1].tif, BusTimeInForce::Ioc);
     ASSERT_EQ(got.cancels.size(), 2u);
     EXPECT_EQ(got.cancels[0].slot_id, 1u);
@@ -188,7 +199,7 @@ TEST(BusFraming, OrderBatchRejectsTruncated) {
         .client_order_id = 1,
         .component_id = "SPOT",
         .side = BusSide::Buy,
-        .price = "1",
+        .price = BusPrice{.whole = 1, .frac = 0},
         .qty = 1,
         .tif = BusTimeInForce::Day,
     });

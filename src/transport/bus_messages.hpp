@@ -89,8 +89,19 @@ struct BusOpenAck {
     std::uint32_t n_slots = 0;
 };
 
+// On-grid price: value = whole + frac * tick_size, 0 <= frac < ticks_per_unit.
+// tick_size / ticks_per_unit come from Open.components[]. No float on the wire.
+struct BusPrice {
+    std::int64_t whole = 0;
+    std::int64_t frac = 0;
+
+    [[nodiscard]] friend bool operator==(const BusPrice& a, const BusPrice& b) noexcept {
+        return a.whole == b.whole && a.frac == b.frac;
+    }
+};
+
 struct BusBookLevel {
-    std::string price;  // decimal text
+    BusPrice price;
     std::uint64_t qty = 0;
 };
 
@@ -105,7 +116,7 @@ struct BusTrade {
     std::uint64_t client_order_id = 0;
     BusExecType exec_type = BusExecType::Unspecified;
     std::string component_id;
-    std::string price;  // fill price; empty on Cancel
+    BusPrice price;  // {0,0} on Cancel
     std::uint64_t qty = 0;
     std::uint64_t leaves = 0;
 };
@@ -135,7 +146,7 @@ struct BusOrder {
     std::uint64_t client_order_id = 0;
     std::string component_id;
     BusSide side = BusSide::Unspecified;
-    std::string price;  // decimal text
+    BusPrice price;
     std::uint64_t qty = 0;
     BusTimeInForce tif = BusTimeInForce::Unspecified;
 };
