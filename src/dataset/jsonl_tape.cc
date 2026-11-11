@@ -188,13 +188,15 @@ std::optional<SnapshotEvent> JsonlTape::ReadOne() {
             parse_event_.symbol != only_symbol_) {
             continue;
         }
+        // Move parse buffers into the returned event; re-reserve parse scratch
+        // so the next line does not realloc level storage.
         SnapshotEvent event;
         event.seq = parse_event_.seq;
         event.ts_ns = parse_event_.ts_ns;
-        event.symbol = parse_event_.symbol;
-        // Steal level vectors (capacity goes with the event into the window).
+        event.symbol = std::move(parse_event_.symbol);
         event.bids = std::move(parse_event_.bids);
         event.asks = std::move(parse_event_.asks);
+        parse_event_.symbol.clear();
         parse_event_.bids.clear();
         parse_event_.asks.clear();
         parse_event_.bids.reserve(kMaxLevelsPerSide);

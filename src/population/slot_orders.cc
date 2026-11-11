@@ -1,6 +1,7 @@
 #include "population/slot_orders.hpp"
 
 #include "population/match.hpp"
+#include "population/price_ticks.hpp"
 
 #include <algorithm>
 
@@ -25,12 +26,9 @@ OrderResult SlotOrders::Cancel(std::uint64_t client_order_id) {
     return OrderResult::NoSuchOrder;
 }
 
-std::vector<Trade> SlotOrders::MatchDue(std::uint64_t pop_ts_ns, std::vector<Level> bids,
-                                        std::vector<Level> asks, double tick_size,
-                                        ImpactState* impact,
-                                        const std::string& component_id) {
-    std::vector<Trade> trades;
-
+void SlotOrders::MatchDue(std::uint64_t pop_ts_ns, std::vector<Level>& bids,
+                          std::vector<Level>& asks, double tick_size, ImpactState* impact,
+                          const std::string& component_id, std::vector<Trade>& trades) {
     for (WorkingOrder& working : orders_) {
         if (working.leaves == 0 || working.effective_ts_ns > pop_ts_ns ||
             working.component_id != component_id) {
@@ -77,7 +75,6 @@ std::vector<Trade> SlotOrders::MatchDue(std::uint64_t pop_ts_ns, std::vector<Lev
     }
 
     Reap();
-    return trades;
 }
 
 std::size_t SlotOrders::LiveCount() const {

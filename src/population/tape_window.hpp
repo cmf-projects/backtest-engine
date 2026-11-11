@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <vector>
 
 namespace population {
 
@@ -13,9 +14,10 @@ namespace population {
 class TapeWindow {
 public:
     // Append a newer snapshot (ts must be > head, or window empty).
+    // Reuses pooled SnapshotEvent shells when available (level capacity kept).
     void Append(SnapshotEvent snap);
 
-    // Drop snapshots with ts_ns < floor_ts_ns. No-op if empty / floor at or below oldest.
+    // Drop snapshots with ts_ns < floor_ts_ns. Recycles into pool.
     void TrimBefore(std::uint64_t floor_ts_ns);
 
     [[nodiscard]] bool empty() const noexcept { return snaps_.empty(); }
@@ -31,6 +33,7 @@ public:
 
 private:
     std::deque<SnapshotEvent> snaps_;
+    std::vector<SnapshotEvent> pool_;  // recycled by TrimBefore → Append
 };
 
 }  // namespace population

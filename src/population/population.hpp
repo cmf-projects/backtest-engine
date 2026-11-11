@@ -164,7 +164,6 @@ private:
     BookDiffResult diff_scratch_;
     std::vector<Level> match_bids_scratch_;
     std::vector<Level> match_asks_scratch_;
-    std::vector<Trade> match_trades_scratch_;
 };
 
 }  // namespace population
