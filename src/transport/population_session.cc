@@ -115,32 +115,24 @@ PopulationSession::Step PopulationSession::OnOpen(const std::vector<std::uint8_t
                                                          why.empty() ? "bad Open" : why)));
         return FinishFatal(ErrorCode::Internal, why.empty() ? "bad Open" : why, false);
     }
-    // P0: single-component Population; bundle is milestone 3.
-    if (open.components.size() != 1) {
-        const std::string msg = "P0 expects exactly one component";
-        (void)SendOut(BusMsgType::OpenAck,
-                      EncodeBusOpenAck(MakeBusOpenReject(cfg_.population_id, ErrorCode::Internal,
-                                                         msg)));
-        return FinishFatal(ErrorCode::Internal, msg, false);
-    }
-
-    const BusComponent& component = open.components.front();
-    double tick_size = 0.0;
-    if (!ParseDecimal(component.tick_size, tick_size) || !(tick_size > 0.0)) {
-        const std::string msg = "bad tick_size";
-        (void)SendOut(BusMsgType::OpenAck,
-                      EncodeBusOpenAck(MakeBusOpenReject(cfg_.population_id, ErrorCode::Internal,
-                                                         msg)));
-        return FinishFatal(ErrorCode::Internal, msg, false);
-    }
-
     try {
-        auto tape = MakeTape(component);
-        if (tape == nullptr) {
-            throw std::runtime_error("make_tape returned null");
+        std::vector<population::ComponentSpec> specs;
+        specs.reserve(open.components.size());
+        for (const BusComponent& component : open.components) {
+            double tick_size = 0.0;
+            if (!ParseDecimal(component.tick_size, tick_size) || !(tick_size > 0.0)) {
+                throw std::runtime_error("bad tick_size");
+            }
+            auto tape = MakeTape(component);
+            if (tape == nullptr) {
+                throw std::runtime_error("make_tape returned null");
+            }
+            specs.push_back(population::ComponentSpec{.component_id = component.component_id,
+                                                      .tick_size = tick_size,
+                                                      .tape = std::move(tape)});
         }
-        pop_ = std::make_unique<population::Population>(
-            component.component_id, tick_size, std::move(tape), ToSlotConfigs(open.slots));
+        pop_ = std::make_unique<population::Population>(std::move(specs),
+                                                        ToSlotConfigs(open.slots));
         pop_->Start();
     } catch (const std::exception& ex) {
         const std::string msg = ex.what();

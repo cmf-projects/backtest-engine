@@ -199,8 +199,8 @@ struct BusError {
         why = "empty population_id";
         return false;
     }
-    if (open.components.empty()) {
-        why = "no components";
+    if (open.components.empty() || open.components.size() > 3) {
+        why = "components must be 1…3";
         return false;
     }
     if (open.slots.empty()) {

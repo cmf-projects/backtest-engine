@@ -44,7 +44,7 @@ apps/population_smoke/      in-process Open→Tick→Advance→End
 options/                    TOML per entrypoint (e.g. population_venue.toml)
 src/population_venue/       config/ + app/ (listen, spawn sessions)
 src/transport/              UDS, QueueRegistry, SPSC bus, PopulationSession
-src/population/             core (P0: 1 component; target: ≤3 legs)
+src/population/             core (1…3 components via MergedTape)
 src/dataset/                JSONL → Tape
 testdata/population/        smoke JSONL
 scripts/mbo_to_snapshots.py offline MBO → snapshot JSONL
@@ -61,7 +61,7 @@ Override via `CONFIG` / `POPULATION_UDS` / `POPULATION_DRAIN_MS`.
 
 - Strategies **do not** compete for liquidity or see each other’s orders (per-slot effective book + impact).
 - One **`pop_ts`** per population; timing knobs are **`md_lag`** and **`Δ` only** (`Δ ≥ 1`).
-- Bundle contract: up to **3** components (spot / futures / option); missing leg → fewer books, not empty stubs. **Code today is still 1 component** — that is lag, not a contract change (IMPL веха 3).
+- Bundle contract: up to **3** components (spot / futures / option); missing component → fewer books, not empty stubs. **Population accepts 1…3** (IMPL 3.2); MakeTick books for late components / match polish → 3.3–3.4.
 - Fatal protocol / bad Open / bad OrderBatch → Error + `SessionEnded{fatal}` + drain Close|timeout (recoverable OrdersAck is later).
 
 ---
@@ -75,4 +75,4 @@ make population-smoke
 make population          # listen; default UDS /tmp/cmf-population.sock
 ```
 
-Next coding milestone: see IMPL (**3.2** multi-component Population; 3.1 MergedTape done). Ops last: graceful Ctrl+C + plain/JSON logger (веха 5).
+Next coding milestone: see IMPL (**3.3** MakeTick books[] for all present components; 3.2 done). Ops last: graceful Ctrl+C + plain/JSON logger (веха 5).

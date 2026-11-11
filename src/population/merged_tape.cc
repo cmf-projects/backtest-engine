@@ -6,17 +6,17 @@
 
 namespace population {
 
-MergedTape::MergedTape(std::vector<MergedLeg> legs) {
-    if (legs.empty()) {
-        throw std::invalid_argument("MergedTape: need at least one leg");
+MergedTape::MergedTape(std::vector<MergedComponent> components) {
+    if (components.empty()) {
+        throw std::invalid_argument("MergedTape: need at least one component");
     }
-    if (legs.size() > 3) {
-        throw std::invalid_argument("MergedTape: at most 3 legs");
+    if (components.size() > 3) {
+        throw std::invalid_argument("MergedTape: at most 3 components");
     }
 
     std::unordered_set<std::string> seen;
-    legs_.reserve(legs.size());
-    for (auto& in : legs) {
+    components_.reserve(components.size());
+    for (auto& in : components) {
         if (in.component_id.empty()) {
             throw std::invalid_argument("MergedTape: empty component_id");
         }
@@ -27,7 +27,7 @@ MergedTape::MergedTape(std::vector<MergedLeg> legs) {
             throw std::invalid_argument("MergedTape: duplicate component_id");
         }
 
-        LegState st;
+        ComponentState st;
         st.component_id = std::move(in.component_id);
         st.tape = std::move(in.tape);
         st.pending = st.tape->Next();
@@ -38,23 +38,25 @@ MergedTape::MergedTape(std::vector<MergedLeg> legs) {
         if (st.pending->ts_ns == 0) {
             throw std::invalid_argument("MergedTape: first event ts_ns must be non-zero");
         }
-        legs_.push_back(std::move(st));
+        components_.push_back(std::move(st));
     }
 
-    std::sort(legs_.begin(), legs_.end(),
-              [](const LegState& a, const LegState& b) { return a.component_id < b.component_id; });
+    std::sort(components_.begin(), components_.end(),
+              [](const ComponentState& a, const ComponentState& b) {
+                  return a.component_id < b.component_id;
+              });
 
     start_ts_ = *MinPendingTs();
 }
 
 std::optional<std::uint64_t> MergedTape::MinPendingTs() const {
     std::optional<std::uint64_t> best;
-    for (const auto& leg : legs_) {
-        if (!leg.pending.has_value()) {
+    for (const auto& c : components_) {
+        if (!c.pending.has_value()) {
             continue;
         }
-        if (!best.has_value() || leg.pending->ts_ns < *best) {
-            best = leg.pending->ts_ns;
+        if (!best.has_value() || c.pending->ts_ns < *best) {
+            best = c.pending->ts_ns;
         }
     }
     return best;
@@ -69,29 +71,30 @@ std::optional<MergedStep> MergedTape::Next() {
 
     MergedStep step;
     step.ts_ns = t;
-    step.components.reserve(legs_.size());
+    step.components.reserve(components_.size());
 
-    for (auto& leg : legs_) {
-        if (leg.pending.has_value() && leg.pending->ts_ns == t) {
-            if (leg.last.has_value() && leg.pending->ts_ns <= leg.last->ts_ns) {
-                throw std::logic_error("MergedTape: non-increasing ts on leg " + leg.component_id);
+    for (auto& c : components_) {
+        if (c.pending.has_value() && c.pending->ts_ns == t) {
+            if (c.last.has_value() && c.pending->ts_ns <= c.last->ts_ns) {
+                throw std::logic_error("MergedTape: non-increasing ts on component " +
+                                       c.component_id);
             }
-            leg.last = std::move(*leg.pending);
-            leg.pending = leg.tape->Next();
-            if (leg.pending.has_value() && leg.pending->ts_ns <= leg.last->ts_ns) {
-                throw std::logic_error("MergedTape: non-increasing pending ts on leg " +
-                                       leg.component_id);
+            c.last = std::move(*c.pending);
+            c.pending = c.tape->Next();
+            if (c.pending.has_value() && c.pending->ts_ns <= c.last->ts_ns) {
+                throw std::logic_error("MergedTape: non-increasing pending ts on component " +
+                                       c.component_id);
             }
             step.components.push_back(
-                ComponentSnap{.component_id = leg.component_id, .snap = *leg.last, .updated = true});
+                ComponentSnap{.component_id = c.component_id, .snap = *c.last, .updated = true});
             continue;
         }
 
-        if (leg.last.has_value()) {
+        if (c.last.has_value()) {
             step.components.push_back(ComponentSnap{
-                .component_id = leg.component_id, .snap = *leg.last, .updated = false});
+                .component_id = c.component_id, .snap = *c.last, .updated = false});
         }
-        // else: leg not started yet (first event still in the future) — omit
+        // else: component not started yet (first event still in the future) — omit
     }
 
     return step;

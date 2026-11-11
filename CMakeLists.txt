@@ -120,6 +120,7 @@ if(CMF_BUILD_TESTS)
 
   add_executable(population_tests
     tests/population/population_tick_test.cc
+    tests/population/population_bundle_test.cc
     tests/population/tape_window_test.cc
     tests/population/merged_tape_test.cc
     tests/population/order_submit_test.cc

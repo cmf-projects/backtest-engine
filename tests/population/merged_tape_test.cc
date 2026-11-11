@@ -11,7 +11,7 @@
 
 using population::ComponentSnap;
 using population::Level;
-using population::MergedLeg;
+using population::MergedComponent;
 using population::MergedStep;
 using population::MergedTape;
 using population::SnapshotEvent;
@@ -45,27 +45,27 @@ const ComponentSnap* Find(const MergedStep& step, const std::string& id) {
 
 }  // namespace
 
-// Two tapes with staggered timestamps (gaps): keep-last fills missing leg.
+// Two tapes with staggered timestamps (gaps): keep-last fills missing component.
 //
 //   spot: 100,      300
 //   fut:  100, 200,      400
 TEST(MergedTape, TwoTapesWithGapsKeepLast) {
-    std::vector<MergedLeg> legs;
-    legs.push_back(MergedLeg{.component_id = "fut",
+    std::vector<MergedComponent> components;
+    components.push_back(MergedComponent{.component_id = "fut",
                              .tape = MakeTape({
                                  Ev("FUT", 1, 100, 10),
                                  Ev("FUT", 2, 200, 20),
                                  Ev("FUT", 3, 400, 40),
                              })});
-    legs.push_back(MergedLeg{.component_id = "spot",
+    components.push_back(MergedComponent{.component_id = "spot",
                              .tape = MakeTape({
                                  Ev("SPOT", 1, 100, 1),
                                  Ev("SPOT", 2, 300, 3),
                              })});
-    MergedTape merge(std::move(legs));
+    MergedTape merge(std::move(components));
 
     EXPECT_EQ(merge.StartTs(), 100u);
-    EXPECT_EQ(merge.leg_count(), 2u);
+    EXPECT_EQ(merge.component_count(), 2u);
 
     {
         const auto step = merge.Next();
@@ -120,19 +120,19 @@ TEST(MergedTape, TwoTapesWithGapsKeepLast) {
     EXPECT_FALSE(merge.Next().has_value());
 }
 
-TEST(MergedTape, LateStartingLegOmittedUntilFirstEvent) {
+TEST(MergedTape, LateStartingComponentOmittedUntilFirstEvent) {
     // fut starts later than spot — first step has only spot.
-    std::vector<MergedLeg> legs;
-    legs.push_back(MergedLeg{.component_id = "fut",
+    std::vector<MergedComponent> components;
+    components.push_back(MergedComponent{.component_id = "fut",
                              .tape = MakeTape({
                                  Ev("FUT", 1, 200, 20),
                              })});
-    legs.push_back(MergedLeg{.component_id = "spot",
+    components.push_back(MergedComponent{.component_id = "spot",
                              .tape = MakeTape({
                                  Ev("SPOT", 1, 100, 1),
                                  Ev("SPOT", 2, 200, 2),
                              })});
-    MergedTape merge(std::move(legs));
+    MergedTape merge(std::move(components));
 
     {
         const auto step = merge.Next();
@@ -156,20 +156,20 @@ TEST(MergedTape, LateStartingLegOmittedUntilFirstEvent) {
 }
 
 TEST(MergedTape, RejectsDuplicateComponentId) {
-    std::vector<MergedLeg> legs;
-    legs.push_back(MergedLeg{.component_id = "spot", .tape = MakeTape({Ev("A", 1, 100, 1)})});
-    legs.push_back(MergedLeg{.component_id = "spot", .tape = MakeTape({Ev("B", 1, 100, 1)})});
-    EXPECT_THROW(MergedTape(std::move(legs)), std::invalid_argument);
+    std::vector<MergedComponent> components;
+    components.push_back(MergedComponent{.component_id = "spot", .tape = MakeTape({Ev("A", 1, 100, 1)})});
+    components.push_back(MergedComponent{.component_id = "spot", .tape = MakeTape({Ev("B", 1, 100, 1)})});
+    EXPECT_THROW(MergedTape(std::move(components)), std::invalid_argument);
 }
 
-TEST(MergedTape, SingleLegIsIdentity) {
-    std::vector<MergedLeg> legs;
-    legs.push_back(MergedLeg{.component_id = "spot",
+TEST(MergedTape, SingleComponentIsIdentity) {
+    std::vector<MergedComponent> components;
+    components.push_back(MergedComponent{.component_id = "spot",
                              .tape = MakeTape({
                                  Ev("SPOT", 1, 100, 1),
                                  Ev("SPOT", 2, 200, 2),
                              })});
-    MergedTape merge(std::move(legs));
+    MergedTape merge(std::move(components));
 
     auto a = merge.Next();
     ASSERT_TRUE(a.has_value());

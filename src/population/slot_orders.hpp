@@ -18,13 +18,15 @@ public:
 
     // Match orders with effective_ts <= pop_ts_ns against copies of levels
     // (already effective if caller applied impact). Does not mutate FileBook.
+    // Only orders with matching `component_id` are considered.
     // Fills update `impact` when non-null. DAY rests; IOC cancels leftover;
     // FOK all-or-nothing.
     [[nodiscard]] std::vector<Trade> MatchDue(std::uint64_t pop_ts_ns,
                                               std::vector<Level> bids,
                                               std::vector<Level> asks,
                                               double tick_size,
-                                              ImpactState* impact);
+                                              ImpactState* impact,
+                                              const std::string& component_id);
 
     [[nodiscard]] std::size_t LiveCount() const;
     [[nodiscard]] const std::vector<WorkingOrder>& orders() const noexcept { return orders_; }

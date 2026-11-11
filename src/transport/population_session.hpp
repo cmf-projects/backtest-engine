@@ -33,7 +33,7 @@ enum class SessionPhase : std::uint8_t {
 struct SessionConfig {
     std::string population_id;
     std::uint32_t drain_timeout_ms = kDefaultDrainTimeoutMs;
-    // Builds a Tape for Open.components[0] (P0 single-component).
+    // Builds a Tape for each Open.components[] row (1…3).
     // Default (empty): dataset::MakeJsonlTape(path, sec_code).
     std::function<population::TapePtr(const BusComponent&)> make_tape;
 };

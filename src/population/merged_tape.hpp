@@ -1,9 +1,9 @@
 #pragma once
 
 // Merge N component Tapes into one timeline by ts_ns (TZ §6; IMPL 3.1).
-// On each step: all legs that already had a first event appear; legs without
-// an event at this ts keep their last snapshot (keep-last). Legs not yet
-// started are omitted until their first event.
+// On each step: all components that already had a first event appear; those
+// without an event at this ts keep their last snapshot (keep-last). Components
+// not yet started are omitted until their first event.
 
 #include "population/tape.hpp"
 #include "population/types.hpp"
@@ -19,7 +19,7 @@ namespace population {
 struct ComponentSnap {
     std::string component_id;
     SnapshotEvent snap;
-    bool updated = false;  // true iff this leg consumed a tape event at step ts
+    bool updated = false;  // true iff this component consumed a tape event at step ts
 };
 
 struct MergedStep {
@@ -27,7 +27,7 @@ struct MergedStep {
     std::vector<ComponentSnap> components;  // sorted by component_id
 };
 
-struct MergedLeg {
+struct MergedComponent {
     std::string component_id;
     TapePtr tape;
 };
@@ -36,16 +36,16 @@ class MergedTape {
 public:
     // 1…N non-null tapes with unique non-empty component_id.
     // Each tape must already satisfy Tape contract (pending first event).
-    explicit MergedTape(std::vector<MergedLeg> legs);
+    explicit MergedTape(std::vector<MergedComponent> components);
 
     [[nodiscard]] std::uint64_t StartTs() const noexcept { return start_ts_; }
-    [[nodiscard]] std::size_t leg_count() const noexcept { return legs_.size(); }
+    [[nodiscard]] std::size_t component_count() const noexcept { return components_.size(); }
 
-    // Next distinct ts on the merged timeline, or nullopt at EOF of all legs.
+    // Next distinct ts on the merged timeline, or nullopt at EOF of all components.
     [[nodiscard]] std::optional<MergedStep> Next();
 
 private:
-    struct LegState {
+    struct ComponentState {
         std::string component_id;
         TapePtr tape;
         std::optional<SnapshotEvent> pending;
@@ -54,7 +54,7 @@ private:
 
     [[nodiscard]] std::optional<std::uint64_t> MinPendingTs() const;
 
-    std::vector<LegState> legs_;
+    std::vector<ComponentState> components_;
     std::uint64_t start_ts_ = 0;
 };
 

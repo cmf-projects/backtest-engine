@@ -13,13 +13,13 @@
 
 | Кусок | Статус |
 | --- | --- |
-| `src/population/*` | 1 component: Start / MakeTick / Submit / Advance, impact, match, tests |
+| `src/population/*` | 1…3 components via MergedTape: Start / MakeTick / Submit / Advance, impact, match, tests |
 | `src/dataset/jsonl_tape.*` | Tape ← JSONL |
 | `src/transport/*` | UDS control + SPSC bus + session (свой binary framing) |
 | `apps/population_venue` + smoke | listen UDS; in-process smoke |
 | `third_party/ipc.h` | не подключён (эталон SPMC; свой SPSC уже есть) |
 
-Gap до ТЗ: нет 1…3 книг (bundle); Submit ещё без recoverable Ack.
+Gap до ТЗ: MakeTick/Match multi-component polish (3.3–3.5); Submit ещё без recoverable Ack.
 
 ---
 
@@ -92,12 +92,12 @@ CMF binary не ломаем. Population lib линкуем в новый app.
 | # | Задача | Done when |
 | --- | --- | --- |
 | 3.1 | `MergedTape` / scheduler: N `Tape` → события, упорядоченные по `ts_ns`; на шаге keep-last per component | ✅ unit: 2 ленты с дырами (`merged_tape_test`) |
-| 3.2 | `Population` → multi-component: FileBook / TapeWindow / Impact / Working **per component_id** | API Open.components 1…3 |
+| 3.2 | `Population` → multi-component: FileBook / TapeWindow / Impact / Working **per component_id** | ✅ API Open.components 1…3 (`population_bundle_test`) |
 | 3.3 | MakeTick: SlotTick.books[] по всем ногам, у которых уже было first event; нет ноги → нет book | тест spot+fut; тест только fut |
 | 3.4 | Match/Submit с `component_id`; неизвестный id → fatal (пока) | тест |
 | 3.5 | Один `pop_ts`, один Advance двигает merge | детерминизм: два прогона → те же trades |
 
-Рефактор: не плодить три `Population`; одна популяция, map `component_id → leg state`.
+Рефактор: не плодить три `Population`; одна популяция, map `component_id → component state`.
 
 ---
 
