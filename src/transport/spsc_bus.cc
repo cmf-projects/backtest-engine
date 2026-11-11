@@ -137,8 +137,12 @@ BusRecvResult SpscBus::TryRecv(BusMsgType& type, std::vector<std::uint8_t>& payl
                 return FailProtocol();
             }
             type = asm_type_;
-            payload = std::move(asm_buf_);
-            ResetReassembly();
+            // Swap keeps capacity on both sides across messages.
+            payload.swap(asm_buf_);
+            assembling_ = false;
+            asm_type_ = BusMsgType::Unspecified;
+            asm_total_ = 0;
+            asm_buf_.clear();
             return BusRecvResult::Message;
         }
         // Need more fragments; pull next slot if available.

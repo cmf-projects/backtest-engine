@@ -9,15 +9,19 @@
 namespace transport {
 
 inline void AppendU32(std::vector<std::uint8_t>& out, std::uint32_t v) {
-    out.push_back(static_cast<std::uint8_t>(v));
-    out.push_back(static_cast<std::uint8_t>(v >> 8));
-    out.push_back(static_cast<std::uint8_t>(v >> 16));
-    out.push_back(static_cast<std::uint8_t>(v >> 24));
+    const std::size_t n = out.size();
+    out.resize(n + 4);
+    out[n] = static_cast<std::uint8_t>(v);
+    out[n + 1] = static_cast<std::uint8_t>(v >> 8);
+    out[n + 2] = static_cast<std::uint8_t>(v >> 16);
+    out[n + 3] = static_cast<std::uint8_t>(v >> 24);
 }
 
 inline void AppendU64(std::vector<std::uint8_t>& out, std::uint64_t v) {
+    const std::size_t n = out.size();
+    out.resize(n + 8);
     for (int i = 0; i < 8; ++i) {
-        out.push_back(static_cast<std::uint8_t>(v >> (8 * i)));
+        out[n + static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(v >> (8 * i));
     }
 }
 

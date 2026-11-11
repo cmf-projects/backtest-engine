@@ -109,8 +109,8 @@ void AppendSlotTick(std::vector<std::uint8_t>& out, const BusSlotTick& slot) {
 
 }  // namespace
 
-std::vector<std::uint8_t> EncodeBusOpen(const BusOpen& msg) {
-    std::vector<std::uint8_t> out;
+void EncodeBusOpenInto(const BusOpen& msg, std::vector<std::uint8_t>& out) {
+    out.clear();
     AppendString(out, msg.population_id);
     AppendU32(out, msg.tape_stride);
     AppendU32(out, static_cast<std::uint32_t>(msg.components.size()));
@@ -129,6 +129,11 @@ std::vector<std::uint8_t> EncodeBusOpen(const BusOpen& msg) {
         AppendU64(out, s.delta_ns);
         AppendString(out, s.impact_lambda);
     }
+}
+
+std::vector<std::uint8_t> EncodeBusOpen(const BusOpen& msg) {
+    std::vector<std::uint8_t> out;
+    EncodeBusOpenInto(msg, out);
     return out;
 }
 
@@ -177,13 +182,18 @@ bool DecodeBusOpen(const std::uint8_t* data, std::size_t size, BusOpen& out) {
     return true;
 }
 
-std::vector<std::uint8_t> EncodeBusOpenAck(const BusOpenAck& msg) {
-    std::vector<std::uint8_t> out;
+void EncodeBusOpenAckInto(const BusOpenAck& msg, std::vector<std::uint8_t>& out) {
+    out.clear();
     AppendString(out, msg.population_id);
     out.push_back(static_cast<std::uint8_t>(msg.status));
     AppendU32(out, static_cast<std::uint32_t>(msg.reason_code));
     AppendString(out, msg.message);
     AppendU32(out, msg.n_slots);
+}
+
+std::vector<std::uint8_t> EncodeBusOpenAck(const BusOpenAck& msg) {
+    std::vector<std::uint8_t> out;
+    EncodeBusOpenAckInto(msg, out);
     return out;
 }
 
@@ -206,8 +216,8 @@ bool DecodeBusOpenAck(const std::uint8_t* data, std::size_t size, BusOpenAck& ou
     return true;
 }
 
-std::vector<std::uint8_t> EncodeBusTick(const BusTick& msg) {
-    std::vector<std::uint8_t> out;
+void EncodeBusTickInto(const BusTick& msg, std::vector<std::uint8_t>& out) {
+    out.clear();
     AppendU64(out, msg.pop_ts_ns);
     AppendU32(out, static_cast<std::uint32_t>(msg.books.size()));
     for (const auto& book : msg.books) {
@@ -217,6 +227,11 @@ std::vector<std::uint8_t> EncodeBusTick(const BusTick& msg) {
     for (const auto& slot : msg.slots) {
         AppendSlotTick(out, slot);
     }
+}
+
+std::vector<std::uint8_t> EncodeBusTick(const BusTick& msg) {
+    std::vector<std::uint8_t> out;
+    EncodeBusTickInto(msg, out);
     return out;
 }
 
@@ -255,8 +270,8 @@ bool DecodeBusTick(const std::uint8_t* data, std::size_t size, BusTick& out) {
     return true;
 }
 
-std::vector<std::uint8_t> EncodeBusOrderBatch(const BusOrderBatch& msg) {
-    std::vector<std::uint8_t> out;
+void EncodeBusOrderBatchInto(const BusOrderBatch& msg, std::vector<std::uint8_t>& out) {
+    out.clear();
     AppendU32(out, static_cast<std::uint32_t>(msg.orders.size()));
     for (const auto& o : msg.orders) {
         AppendU32(out, o.slot_id);
@@ -272,6 +287,11 @@ std::vector<std::uint8_t> EncodeBusOrderBatch(const BusOrderBatch& msg) {
         AppendU32(out, c.slot_id);
         AppendU64(out, c.client_order_id);
     }
+}
+
+std::vector<std::uint8_t> EncodeBusOrderBatch(const BusOrderBatch& msg) {
+    std::vector<std::uint8_t> out;
+    EncodeBusOrderBatchInto(msg, out);
     return out;
 }
 
@@ -316,11 +336,16 @@ bool DecodeBusOrderBatch(const std::uint8_t* data, std::size_t size, BusOrderBat
     return true;
 }
 
-std::vector<std::uint8_t> EncodeBusOrdersAck(const BusOrdersAck& msg) {
-    std::vector<std::uint8_t> out;
+void EncodeBusOrdersAckInto(const BusOrdersAck& msg, std::vector<std::uint8_t>& out) {
+    out.clear();
     out.push_back(static_cast<std::uint8_t>(msg.status));
     AppendU32(out, static_cast<std::uint32_t>(msg.reason_code));
     AppendString(out, msg.message);
+}
+
+std::vector<std::uint8_t> EncodeBusOrdersAck(const BusOrdersAck& msg) {
+    std::vector<std::uint8_t> out;
+    EncodeBusOrdersAckInto(msg, out);
     return out;
 }
 
@@ -342,37 +367,42 @@ bool DecodeBusOrdersAck(const std::uint8_t* data, std::size_t size, BusOrdersAck
     return true;
 }
 
-std::vector<std::uint8_t> EncodeBusAdvance() {
-    return {};
-}
+void EncodeBusAdvanceInto(std::vector<std::uint8_t>& out) { out.clear(); }
+
+std::vector<std::uint8_t> EncodeBusAdvance() { return {}; }
 
 bool DecodeBusAdvance(const std::uint8_t* data, std::size_t size) {
     (void)data;
     return size == 0;
 }
 
-std::vector<std::uint8_t> EncodeBusEnd() {
-    return {};
-}
+void EncodeBusEndInto(std::vector<std::uint8_t>& out) { out.clear(); }
+
+std::vector<std::uint8_t> EncodeBusEnd() { return {}; }
 
 bool DecodeBusEnd(const std::uint8_t* data, std::size_t size) {
     (void)data;
     return size == 0;
 }
 
-std::vector<std::uint8_t> EncodeBusClose() {
-    return {};
-}
+void EncodeBusCloseInto(std::vector<std::uint8_t>& out) { out.clear(); }
+
+std::vector<std::uint8_t> EncodeBusClose() { return {}; }
 
 bool DecodeBusClose(const std::uint8_t* data, std::size_t size) {
     (void)data;
     return size == 0;
 }
 
-std::vector<std::uint8_t> EncodeBusError(const BusError& msg) {
-    std::vector<std::uint8_t> out;
+void EncodeBusErrorInto(const BusError& msg, std::vector<std::uint8_t>& out) {
+    out.clear();
     AppendU32(out, static_cast<std::uint32_t>(msg.code));
     AppendString(out, msg.message);
+}
+
+std::vector<std::uint8_t> EncodeBusError(const BusError& msg) {
+    std::vector<std::uint8_t> out;
+    EncodeBusErrorInto(msg, out);
     return out;
 }
 

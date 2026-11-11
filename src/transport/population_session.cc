@@ -92,8 +92,8 @@ FinishSessionStatus PopulationSession::FinishOk(ErrorCode reason, std::string me
 FinishSessionStatus PopulationSession::FinishFatal(ErrorCode reason, std::string message,
                                                    bool close_already_seen) {
     phase_ = SessionPhase::Finished;
-    (void)SendOut(BusMsgType::Error,
-                  EncodeBusError(BusError{.code = reason, .message = message}));
+    EncodeBusErrorInto(BusError{.code = reason, .message = message}, encode_buf_);
+    (void)SendOut(BusMsgType::Error, encode_buf_);
     pop_.reset();
     return FinishSession(conn_, registry_,
                          MakeSessionEndedFatal(cfg_.population_id, reason, std::move(message)),
@@ -116,7 +116,8 @@ PopulationSession::Step PopulationSession::SendTickFromPopulation() {
     LOG_TRACE("tick pop_ts={} slots={} books_shared={}", tick.pop_ts_ns, tick.slots.size(),
               tick.books.size());
 #endif
-    if (!SendOut(BusMsgType::Tick, EncodeBusTick(tick))) {
+    EncodeBusTickInto(tick, encode_buf_);
+    if (!SendOut(BusMsgType::Tick, encode_buf_)) {
         return FinishFatal(ErrorCode::Internal, "Tick send failed", false);
     }
     phase_ = SessionPhase::AwaitOrderOrAdvance;
@@ -128,9 +129,10 @@ PopulationSession::Step PopulationSession::OnOpen(const std::vector<std::uint8_t
     std::string why;
     if (!DecodeBusOpen(payload.data(), payload.size(), open) ||
         open.population_id != cfg_.population_id || !ValidateBusOpen(open, why)) {
-        (void)SendOut(BusMsgType::OpenAck,
-                      EncodeBusOpenAck(MakeBusOpenReject(cfg_.population_id, ErrorCode::Internal,
-                                                         why.empty() ? "bad Open" : why)));
+        EncodeBusOpenAckInto(MakeBusOpenReject(cfg_.population_id, ErrorCode::Internal,
+                                               why.empty() ? "bad Open" : why),
+                             encode_buf_);
+        (void)SendOut(BusMsgType::OpenAck, encode_buf_);
         return FinishFatal(ErrorCode::Internal, why.empty() ? "bad Open" : why, false);
     }
     try {
@@ -154,15 +156,15 @@ PopulationSession::Step PopulationSession::OnOpen(const std::vector<std::uint8_t
         pop_->Start();
     } catch (const std::exception& ex) {
         const std::string msg = ex.what();
-        (void)SendOut(BusMsgType::OpenAck,
-                      EncodeBusOpenAck(MakeBusOpenReject(cfg_.population_id, ErrorCode::Internal,
-                                                         msg)));
+        EncodeBusOpenAckInto(
+            MakeBusOpenReject(cfg_.population_id, ErrorCode::Internal, msg), encode_buf_);
+        (void)SendOut(BusMsgType::OpenAck, encode_buf_);
         return FinishFatal(ErrorCode::Internal, msg, false);
     }
 
     const auto n_slots = static_cast<std::uint32_t>(open.slots.size());
-    if (!SendOut(BusMsgType::OpenAck,
-                 EncodeBusOpenAck(MakeBusOpenOk(cfg_.population_id, n_slots)))) {
+    EncodeBusOpenAckInto(MakeBusOpenOk(cfg_.population_id, n_slots), encode_buf_);
+    if (!SendOut(BusMsgType::OpenAck, encode_buf_)) {
         return FinishFatal(ErrorCode::Internal, "OpenAck send failed", false);
     }
     return SendTickFromPopulation();
@@ -181,8 +183,9 @@ PopulationSession::Step PopulationSession::OnOrders(const std::vector<std::uint8
     const population::OrderBatchResult result = pop_->Submit(domain);
     const auto failures = result.Failures(domain);
     if (!failures.empty()) {
-        (void)SendOut(BusMsgType::OrdersAck,
-                      EncodeBusOrdersAck(MakeOrdersAckReject(ErrorCode::Internal, "bad orders")));
+        EncodeBusOrdersAckInto(MakeOrdersAckReject(ErrorCode::Internal, "bad orders"),
+                               encode_buf_);
+        (void)SendOut(BusMsgType::OrdersAck, encode_buf_);
         // P0: broken batch is fatal (recoverable OrdersAck later).
         return FinishFatal(ErrorCode::Internal, "OrderBatch rejected", false);
     }
@@ -194,7 +197,8 @@ PopulationSession::Step PopulationSession::OnOrders(const std::vector<std::uint8
     }
     LOG_TRACE("submit ok orders={} cancels={}", batch.orders.size(), batch.cancels.size());
 #endif
-    if (!SendOut(BusMsgType::OrdersAck, EncodeBusOrdersAck(MakeOrdersAckOk()))) {
+    EncodeBusOrdersAckInto(MakeOrdersAckOk(), encode_buf_);
+    if (!SendOut(BusMsgType::OrdersAck, encode_buf_)) {
         return FinishFatal(ErrorCode::Internal, "OrdersAck send failed", false);
     }
     phase_ = SessionPhase::AwaitAdvance;
@@ -209,7 +213,8 @@ PopulationSession::Step PopulationSession::OnAdvance(const std::vector<std::uint
         return FinishFatal(ErrorCode::Internal, "no population", false);
     }
     if (!pop_->Advance()) {
-        if (!SendOut(BusMsgType::End, EncodeBusEnd())) {
+        EncodeBusEndInto(encode_buf_);
+        if (!SendOut(BusMsgType::End, encode_buf_)) {
             return FinishFatal(ErrorCode::Internal, "End send failed", false);
         }
         return FinishOk(ErrorCode::Unspecified, "tape end", false);
@@ -227,9 +232,8 @@ FinishSessionStatus PopulationSession::Run() {
             return FinishFatal(ErrorCode::Internal, "venue shutdown", false);
         }
         BusMsgType type{};
-        std::vector<std::uint8_t> payload;
         BusRecvResult got = BusRecvResult::Empty;
-        if (!WaitProgress(in_, type, payload, StallDeadline(), got, cfg_.shutdown)) {
+        if (!WaitProgress(in_, type, recv_buf_, StallDeadline(), got, cfg_.shutdown)) {
             if (cfg_.shutdown != nullptr && cfg_.shutdown->load(std::memory_order_relaxed)) {
                 return FinishFatal(ErrorCode::Internal, "venue shutdown", false);
             }
@@ -250,13 +254,13 @@ FinishSessionStatus PopulationSession::Run() {
         Step done;
         switch (phase_) {
             case SessionPhase::AwaitOpen:
-                done = OnOpen(payload);
+                done = OnOpen(recv_buf_);
                 break;
             case SessionPhase::AwaitOrderOrAdvance:
-                done = (type == BusMsgType::OrderBatch) ? OnOrders(payload) : OnAdvance(payload);
+                done = (type == BusMsgType::OrderBatch) ? OnOrders(recv_buf_) : OnAdvance(recv_buf_);
                 break;
             case SessionPhase::AwaitAdvance:
-                done = OnAdvance(payload);
+                done = OnAdvance(recv_buf_);
                 break;
             case SessionPhase::Finished:
                 return FinishSessionStatus::Failed;

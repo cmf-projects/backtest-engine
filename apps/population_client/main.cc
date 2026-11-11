@@ -53,10 +53,10 @@ using transport::DecodeBusEnd;
 using transport::DecodeBusOpenAck;
 using transport::DecodeBusOrdersAck;
 using transport::DecodeBusTick;
-using transport::EncodeBusAdvance;
-using transport::EncodeBusClose;
-using transport::EncodeBusOpen;
-using transport::EncodeBusOrderBatch;
+using transport::EncodeBusAdvanceInto;
+using transport::EncodeBusCloseInto;
+using transport::EncodeBusOpenInto;
+using transport::EncodeBusOrderBatchInto;
 using transport::RequestCreateQueues;
 using transport::SessionEnded;
 using transport::SessionEndStatus;
@@ -302,16 +302,20 @@ struct PopHandle {
                                      EndedHub& hub) {
     SpscBus out(pop.out_map.get());
     SpscBus in(pop.in_map.get());
+    std::vector<std::uint8_t> encode_buf;
+    std::vector<std::uint8_t> payload;
+    encode_buf.reserve(512);
+    payload.reserve(512);
 
     const BusOpen open =
         bundle ? MakeOpenBundle(pop.population_id, dataset) : MakeOpenSingle(pop.population_id, dataset);
-    if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(open))) {
+    EncodeBusOpenInto(open, encode_buf);
+    if (!in.TrySend(BusMsgType::Open, encode_buf)) {
         pop.error = "Open send failed";
         return false;
     }
 
     BusMsgType type{};
-    std::vector<std::uint8_t> payload;
     if (!RecvMessage(out, type, payload) || type != BusMsgType::OpenAck) {
         pop.error = "expected OpenAck";
         return false;
@@ -358,7 +362,8 @@ struct PopHandle {
         BusOrderBatch batch = MakeTakeBatch(tick, next_oid, pending);
         if (!batch.orders.empty()) {
             pop.stats.orders_sent += static_cast<int>(batch.orders.size());
-            if (!in.TrySend(BusMsgType::OrderBatch, EncodeBusOrderBatch(batch))) {
+            EncodeBusOrderBatchInto(batch, encode_buf);
+            if (!in.TrySend(BusMsgType::OrderBatch, encode_buf)) {
                 pop.error = "OrderBatch send failed";
                 return false;
             }
@@ -374,7 +379,8 @@ struct PopHandle {
             }
         }
 
-        if (!in.TrySend(BusMsgType::Advance, EncodeBusAdvance())) {
+        EncodeBusAdvanceInto(encode_buf);
+        if (!in.TrySend(BusMsgType::Advance, encode_buf)) {
             pop.error = "Advance send failed";
             return false;
         }
@@ -385,7 +391,8 @@ struct PopHandle {
         pop.error = "SessionEnded timeout";
         return false;
     }
-    (void)in.TrySend(BusMsgType::Close, EncodeBusClose());
+    EncodeBusCloseInto(encode_buf);
+    (void)in.TrySend(BusMsgType::Close, encode_buf);
 
     if (ended.status != SessionEndStatus::Ok) {
         pop.error = "SessionEnded fatal: " + ended.message;

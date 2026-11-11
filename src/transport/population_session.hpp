@@ -80,6 +80,8 @@ private:
     SpscBus in_;
     SessionPhase phase_ = SessionPhase::AwaitOpen;
     std::unique_ptr<population::Population> pop_;
+    std::vector<std::uint8_t> encode_buf_;  // reused by Encode*Into
+    std::vector<std::uint8_t> recv_buf_;    // reused by TryRecv
 };
 
 }  // namespace transport
