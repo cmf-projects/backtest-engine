@@ -158,7 +158,8 @@ private:
     std::uint64_t last_match_pop_ts_ns_ = 0;
     bool matched_this_pop_ = false;
 
-    // Hot-path scratch (reused across MakeTick / match).
+    // Hot-path scratch (reused across MakeTick / match / Advance).
+    MergedStep step_scratch_;
     TickView tick_scratch_;
     SnapshotEvent view_scratch_;
     BookDiffResult diff_scratch_;

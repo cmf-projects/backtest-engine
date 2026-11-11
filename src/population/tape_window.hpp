@@ -15,7 +15,7 @@ class TapeWindow {
 public:
     // Append a newer snapshot (ts must be > head, or window empty).
     // Reuses pooled SnapshotEvent shells when available (level capacity kept).
-    void Append(SnapshotEvent snap);
+    void Append(const SnapshotEvent& snap);
 
     // Drop snapshots with ts_ns < floor_ts_ns. Recycles into pool.
     void TrimBefore(std::uint64_t floor_ts_ns);

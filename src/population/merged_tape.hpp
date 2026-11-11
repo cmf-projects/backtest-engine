@@ -18,7 +18,8 @@ namespace population {
 
 struct ComponentSnap {
     std::string component_id;
-    SnapshotEvent snap;
+    // Points at MergedTape::ComponentState::last (valid until next Next/NextInto).
+    const SnapshotEvent* snap = nullptr;
     bool updated = false;  // true iff this component consumed a tape event at step ts
 };
 
@@ -42,19 +43,26 @@ public:
     [[nodiscard]] std::size_t component_count() const noexcept { return components_.size(); }
 
     // Next distinct ts on the merged timeline, or nullopt at EOF of all components.
+    // Copies from the reused step buffer (tests / convenience).
     [[nodiscard]] std::optional<MergedStep> Next();
+
+    // Fill `out` reusing nested SnapshotEvent capacity. Returns false at EOF.
+    [[nodiscard]] bool NextInto(MergedStep& out);
 
 private:
     struct ComponentState {
         std::string component_id;
         TapePtr tape;
-        std::optional<SnapshotEvent> pending;
-        std::optional<SnapshotEvent> last;
+        SnapshotEvent pending;
+        SnapshotEvent last;
+        bool has_pending = false;
+        bool has_last = false;
     };
 
     [[nodiscard]] std::optional<std::uint64_t> MinPendingTs() const;
 
     std::vector<ComponentState> components_;
+    MergedStep step_;  // reused by Next()
     std::uint64_t start_ts_ = 0;
 };
 

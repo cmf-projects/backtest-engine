@@ -1,5 +1,6 @@
 #include "dataset/jsonl_tape.hpp"
 
+#include "population/snapshot_assign.hpp"
 #include "population/types.hpp"
 
 #include <charconv>
@@ -7,6 +8,7 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 
 namespace dataset {
 namespace {
@@ -146,39 +148,51 @@ JsonlTape::JsonlTape(std::string path, std::string only_symbol)
     line_.reserve(512);
     parse_event_.bids.reserve(kMaxLevelsPerSide);
     parse_event_.asks.reserve(kMaxLevelsPerSide);
-    pending_ = ReadOne();
-    if (!pending_) {
+    pending_.bids.reserve(kMaxLevelsPerSide);
+    pending_.asks.reserve(kMaxLevelsPerSide);
+    if (!ReadOneInto(pending_)) {
         throw std::runtime_error(only_symbol_.empty()
                                      ? ("dataset is empty: " + path_)
                                      : ("dataset has no rows for symbol: " + only_symbol_));
     }
+    has_pending_ = true;
 }
 
 std::uint64_t JsonlTape::StartTs() const {
-    return pending_->ts_ns;
+    return pending_.ts_ns;
 }
 
 const std::string& JsonlTape::FirstSymbol() const {
-    return pending_->symbol;
+    return pending_.symbol;
+}
+
+bool JsonlTape::NextInto(SnapshotEvent& out) {
+    if (has_pending_) {
+        population::AssignSnapshot(out, pending_);
+        has_pending_ = false;
+        return true;
+    }
+    return ReadOneInto(out);
 }
 
 std::optional<SnapshotEvent> JsonlTape::Next() {
-    if (pending_) {
-        SnapshotEvent event = std::move(*pending_);
-        pending_.reset();
-        // Restore parse buffers after move-from pending.
-        if (parse_event_.bids.capacity() < kMaxLevelsPerSide) {
-            parse_event_.bids.reserve(kMaxLevelsPerSide);
-        }
-        if (parse_event_.asks.capacity() < kMaxLevelsPerSide) {
-            parse_event_.asks.reserve(kMaxLevelsPerSide);
-        }
-        return event;
+    if (!NextInto(pending_)) {
+        return std::nullopt;
     }
-    return ReadOne();
+    SnapshotEvent event;
+    event.bids.reserve(kMaxLevelsPerSide);
+    event.asks.reserve(kMaxLevelsPerSide);
+    population::AssignSnapshot(event, std::move(pending_));
+    if (pending_.bids.capacity() < kMaxLevelsPerSide) {
+        pending_.bids.reserve(kMaxLevelsPerSide);
+    }
+    if (pending_.asks.capacity() < kMaxLevelsPerSide) {
+        pending_.asks.reserve(kMaxLevelsPerSide);
+    }
+    return event;
 }
 
-std::optional<SnapshotEvent> JsonlTape::ReadOne() {
+bool JsonlTape::ReadOneInto(SnapshotEvent& out) {
     while (std::getline(file_, line_)) {
         if (line_.empty()) {
             continue;
@@ -188,22 +202,26 @@ std::optional<SnapshotEvent> JsonlTape::ReadOne() {
             parse_event_.symbol != only_symbol_) {
             continue;
         }
-        // Move parse buffers into the returned event; re-reserve parse scratch
-        // so the next line does not realloc level storage.
-        SnapshotEvent event;
-        event.seq = parse_event_.seq;
-        event.ts_ns = parse_event_.ts_ns;
-        event.symbol = std::move(parse_event_.symbol);
-        event.bids = std::move(parse_event_.bids);
-        event.asks = std::move(parse_event_.asks);
+        // Swap levels into out; parse_event_ keeps a capacitous shell for the next line.
+        out.seq = parse_event_.seq;
+        out.ts_ns = parse_event_.ts_ns;
+        out.symbol.swap(parse_event_.symbol);
+        out.bids.swap(parse_event_.bids);
+        out.asks.swap(parse_event_.asks);
+        parse_event_.seq = 0;
+        parse_event_.ts_ns = 0;
         parse_event_.symbol.clear();
         parse_event_.bids.clear();
         parse_event_.asks.clear();
-        parse_event_.bids.reserve(kMaxLevelsPerSide);
-        parse_event_.asks.reserve(kMaxLevelsPerSide);
-        return event;
+        if (parse_event_.bids.capacity() < kMaxLevelsPerSide) {
+            parse_event_.bids.reserve(kMaxLevelsPerSide);
+        }
+        if (parse_event_.asks.capacity() < kMaxLevelsPerSide) {
+            parse_event_.asks.reserve(kMaxLevelsPerSide);
+        }
+        return true;
     }
-    return std::nullopt;
+    return false;
 }
 
 }  // namespace dataset

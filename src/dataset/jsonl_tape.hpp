@@ -20,16 +20,18 @@ public:
     [[nodiscard]] std::uint64_t StartTs() const override;
     [[nodiscard]] const std::string& FirstSymbol() const override;
     [[nodiscard]] std::optional<population::SnapshotEvent> Next() override;
+    [[nodiscard]] bool NextInto(population::SnapshotEvent& out) override;
 
 private:
-    [[nodiscard]] std::optional<population::SnapshotEvent> ReadOne();
+    [[nodiscard]] bool ReadOneInto(population::SnapshotEvent& out);
 
     std::string path_;
     std::string only_symbol_;
     std::ifstream file_;
-    std::string line_;                              // reused by getline
-    population::SnapshotEvent parse_event_;         // reused parse scratch
-    std::optional<population::SnapshotEvent> pending_;
+    std::string line_;                       // reused by getline
+    population::SnapshotEvent parse_event_;  // reused parse scratch (keeps capacity)
+    population::SnapshotEvent pending_;      // first event / Next() scratch
+    bool has_pending_ = false;
 };
 
 [[nodiscard]] inline population::TapePtr MakeJsonlTape(std::string path,

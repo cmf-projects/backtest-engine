@@ -1,14 +1,13 @@
 #include "population/tape_window.hpp"
 
+#include "population/snapshot_assign.hpp"
+
 #include <stdexcept>
 #include <utility>
 
 namespace population {
-namespace {
 
-}  // namespace
-
-void TapeWindow::Append(SnapshotEvent snap) {
+void TapeWindow::Append(const SnapshotEvent& snap) {
     if (snap.ts_ns == 0) {
         throw std::invalid_argument("population::TapeWindow: ts_ns must be non-zero");
     }
@@ -20,28 +19,17 @@ void TapeWindow::Append(SnapshotEvent snap) {
     if (!pool_.empty()) {
         snaps_.push_back(std::move(pool_.back()));
         pool_.pop_back();
-        SnapshotEvent& dst = snaps_.back();
-        dst.seq = snap.seq;
-        dst.ts_ns = snap.ts_ns;
-        dst.symbol = std::move(snap.symbol);
-        // Swap keeps both capacities in circulation (dst↔snap), then recycle snap.
-        dst.bids.swap(snap.bids);
-        dst.asks.swap(snap.asks);
-        snap.seq = 0;
-        snap.ts_ns = 0;
-        snap.symbol.clear();
-        snap.bids.clear();
-        snap.asks.clear();
-        pool_.push_back(std::move(snap));
+        AssignSnapshot(snaps_.back(), snap);
         return;
     }
-    if (snap.bids.capacity() < kMaxLevelsPerSide) {
-        snap.bids.reserve(kMaxLevelsPerSide);
+    SnapshotEvent copy = snap;
+    if (copy.bids.capacity() < kMaxLevelsPerSide) {
+        copy.bids.reserve(kMaxLevelsPerSide);
     }
-    if (snap.asks.capacity() < kMaxLevelsPerSide) {
-        snap.asks.reserve(kMaxLevelsPerSide);
+    if (copy.asks.capacity() < kMaxLevelsPerSide) {
+        copy.asks.reserve(kMaxLevelsPerSide);
     }
-    snaps_.push_back(std::move(snap));
+    snaps_.push_back(std::move(copy));
 }
 
 void TapeWindow::TrimBefore(std::uint64_t floor_ts_ns) {

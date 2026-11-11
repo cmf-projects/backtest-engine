@@ -2,6 +2,7 @@
 
 #include "population/book_diff.hpp"
 #include "population/price_ticks.hpp"
+#include "population/snapshot_assign.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -162,16 +163,25 @@ bool Population::OnGrid(double price, double tick_size) const {
 
 void Population::ApplyMergedStep(const MergedStep& step) {
     for (const ComponentSnap& snap : step.components) {
+        // Keep-last rows: current_ already holds the file snap — skip copy.
+        if (!snap.updated) {
+            continue;
+        }
         Component* component = MutableComponent(snap.component_id);
         if (component == nullptr) {
             throw std::logic_error("population: unknown component in MergedStep: " +
                                    snap.component_id);
         }
-        component->current_ = snap.snap;
-        // Append only on real tape events (keep-last does not grow history).
-        if (snap.updated) {
-            component->window_.Append(snap.snap);
+        if (snap.snap == nullptr) {
+            throw std::logic_error("population: null ComponentSnap::snap");
         }
+        if (!component->current_.has_value()) {
+            component->current_.emplace();
+            component->current_->bids.reserve(kMaxLevelsPerSide);
+            component->current_->asks.reserve(kMaxLevelsPerSide);
+        }
+        AssignSnapshot(*component->current_, *snap.snap);
+        component->window_.Append(*component->current_);
     }
 }
 
@@ -179,12 +189,11 @@ void Population::Start() {
     if (started_) {
         throw std::logic_error("population: already started");
     }
-    auto step = merge_->Next();
-    if (!step) {
+    if (!merge_->NextInto(step_scratch_)) {
         throw std::runtime_error("population: empty merged tape on Start");
     }
-    clock_.Start(step->ts_ns);
-    ApplyMergedStep(*step);
+    clock_.Start(step_scratch_.ts_ns);
+    ApplyMergedStep(step_scratch_);
     started_ = true;
 }
 
@@ -212,12 +221,7 @@ const SnapshotEvent& Population::ViewSnap(const SlotConfig& cfg,
 void Population::EffectiveViewInto(const SlotConfig& cfg, const Component& component,
                                    SnapshotEvent& out) const {
     // TZ §8.4 P0: old file snap @ view_ts, minus *current* eaten (not historical).
-    const SnapshotEvent& src = ViewSnap(cfg, component);
-    out.seq = src.seq;
-    out.ts_ns = src.ts_ns;
-    out.symbol = src.symbol;
-    out.bids = src.bids;  // assign reuses capacity when possible
-    out.asks = src.asks;
+    AssignSnapshot(out, ViewSnap(cfg, component));
     slot_impact_.at(SlotComponentKey{cfg.slot_id, component.component_id()})
         .ApplyTo(out.bids, out.asks, component.tick_size());
 }
@@ -288,21 +292,21 @@ const TickView& Population::MakeTick() {
 
     tick_scratch_.pop_ts_ns = clock_.pop_ts_ns();
     tick_scratch_.books.clear();
-    tick_scratch_.slots.clear();
-    if (tick_scratch_.slots.capacity() < slots_.size()) {
-        tick_scratch_.slots.reserve(slots_.size());
+    if (tick_scratch_.slots.size() != slots_.size()) {
+        tick_scratch_.slots.resize(slots_.size());
     }
     // Shared tick.books unused when md_lag may differ per slot.
 
-    for (const SlotConfig& cfg : slots_) {
-        tick_scratch_.slots.push_back(SlotTickView{});
-        SlotTickView& slot_tick = tick_scratch_.slots.back();
+    for (std::size_t si = 0; si < slots_.size(); ++si) {
+        const SlotConfig& cfg = slots_[si];
+        SlotTickView& slot_tick = tick_scratch_.slots[si];
         slot_tick.slot_id = cfg.slot_id;
-        slot_tick.books.clear();
-        slot_tick.trades = std::move(pending_trades_[cfg.slot_id]);
+        // Swap keeps a capacitous trades buffer in pending_trades_ for MatchDue.
+        slot_tick.trades.swap(pending_trades_[cfg.slot_id]);
         pending_trades_[cfg.slot_id].clear();
 
         SlotSendState& sent = slot_send_.at(cfg.slot_id);
+        std::size_t book_n = 0;
         for (const Component& component : components_) {
             if (!component.present()) {
                 continue;
@@ -323,8 +327,10 @@ const TickView& Population::MakeTick() {
             ComponentSend& send = sent.components[component.component_id()];
 
             if (!send.has_sent) {
-                slot_tick.books.push_back(SlotBookUpdateView{});
-                SlotBookUpdateView& patch = slot_tick.books.back();
+                if (book_n >= slot_tick.books.size()) {
+                    slot_tick.books.resize(book_n + 1);
+                }
+                SlotBookUpdateView& patch = slot_tick.books[book_n++];
                 patch.component_id = component.component_id();
                 patch.kind = BookPatchKind::Keyframe;
                 patch.bids = *view_bids;
@@ -336,8 +342,10 @@ const TickView& Population::MakeTick() {
                 DiffBooksInto(send.last_bids, send.last_asks, *view_bids, *view_asks,
                               component.tick_size(), diff_scratch_);
                 if (!diff_scratch_.empty()) {
-                    slot_tick.books.push_back(SlotBookUpdateView{});
-                    SlotBookUpdateView& patch = slot_tick.books.back();
+                    if (book_n >= slot_tick.books.size()) {
+                        slot_tick.books.resize(book_n + 1);
+                    }
+                    SlotBookUpdateView& patch = slot_tick.books[book_n++];
                     patch.component_id = component.component_id();
                     patch.kind = BookPatchKind::Diff;
                     patch.bids = diff_scratch_.bids;
@@ -347,6 +355,7 @@ const TickView& Population::MakeTick() {
                 }
             }
         }
+        slot_tick.books.resize(book_n);
     }
 
     TrimWindowForLags();
@@ -360,13 +369,12 @@ bool Population::Advance() {
     if (ended_) {
         return false;
     }
-    auto step = merge_->Next();
-    if (!step) {
+    if (!merge_->NextInto(step_scratch_)) {
         ended_ = true;
         return false;
     }
-    clock_.AdvanceTo(step->ts_ns);
-    ApplyMergedStep(*step);
+    clock_.AdvanceTo(step_scratch_.ts_ns);
+    ApplyMergedStep(step_scratch_);
     matched_this_pop_ = false;
     return true;
 }

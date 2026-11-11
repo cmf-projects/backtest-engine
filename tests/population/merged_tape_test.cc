@@ -77,8 +77,8 @@ TEST(MergedTape, TwoTapesWithGapsKeepLast) {
         EXPECT_EQ(step->components[1].component_id, "spot");
         EXPECT_TRUE(Find(*step, "spot")->updated);
         EXPECT_TRUE(Find(*step, "fut")->updated);
-        EXPECT_EQ(Find(*step, "spot")->snap.bids[0].qty, 1u);
-        EXPECT_EQ(Find(*step, "fut")->snap.bids[0].qty, 10u);
+        EXPECT_EQ(Find(*step, "spot")->snap->bids[0].qty, 1u);
+        EXPECT_EQ(Find(*step, "fut")->snap->bids[0].qty, 10u);
     }
 
     {
@@ -89,10 +89,10 @@ TEST(MergedTape, TwoTapesWithGapsKeepLast) {
         ASSERT_EQ(step->components.size(), 2u);
         EXPECT_FALSE(Find(*step, "spot")->updated);
         EXPECT_TRUE(Find(*step, "fut")->updated);
-        EXPECT_EQ(Find(*step, "spot")->snap.bids[0].qty, 1u);
-        EXPECT_EQ(Find(*step, "fut")->snap.bids[0].qty, 20u);
-        EXPECT_EQ(Find(*step, "spot")->snap.ts_ns, 100u);
-        EXPECT_EQ(Find(*step, "fut")->snap.ts_ns, 200u);
+        EXPECT_EQ(Find(*step, "spot")->snap->bids[0].qty, 1u);
+        EXPECT_EQ(Find(*step, "fut")->snap->bids[0].qty, 20u);
+        EXPECT_EQ(Find(*step, "spot")->snap->ts_ns, 100u);
+        EXPECT_EQ(Find(*step, "fut")->snap->ts_ns, 200u);
     }
 
     {
@@ -102,8 +102,8 @@ TEST(MergedTape, TwoTapesWithGapsKeepLast) {
         EXPECT_EQ(step->ts_ns, 300u);
         EXPECT_TRUE(Find(*step, "spot")->updated);
         EXPECT_FALSE(Find(*step, "fut")->updated);
-        EXPECT_EQ(Find(*step, "spot")->snap.bids[0].qty, 3u);
-        EXPECT_EQ(Find(*step, "fut")->snap.bids[0].qty, 20u);
+        EXPECT_EQ(Find(*step, "spot")->snap->bids[0].qty, 3u);
+        EXPECT_EQ(Find(*step, "fut")->snap->bids[0].qty, 20u);
     }
 
     {
@@ -113,8 +113,8 @@ TEST(MergedTape, TwoTapesWithGapsKeepLast) {
         EXPECT_EQ(step->ts_ns, 400u);
         EXPECT_FALSE(Find(*step, "spot")->updated);
         EXPECT_TRUE(Find(*step, "fut")->updated);
-        EXPECT_EQ(Find(*step, "spot")->snap.bids[0].qty, 3u);
-        EXPECT_EQ(Find(*step, "fut")->snap.bids[0].qty, 40u);
+        EXPECT_EQ(Find(*step, "spot")->snap->bids[0].qty, 3u);
+        EXPECT_EQ(Find(*step, "fut")->snap->bids[0].qty, 40u);
     }
 
     EXPECT_FALSE(merge.Next().has_value());
