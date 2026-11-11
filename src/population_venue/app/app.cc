@@ -1,5 +1,6 @@
 #include "population_venue/app/app.hpp"
 
+#include "population_venue/log/log.hpp"
 #include "population_venue/shutdown/shutdown.hpp"
 #include "transport/control.hpp"
 #include "transport/population_session.hpp"
@@ -10,7 +11,6 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <cstdio>
 #include <exception>
 #include <functional>
 #include <optional>
@@ -51,8 +51,7 @@ void RunPopulationSession(transport::UdsConn& conn, transport::QueueRegistry& re
 
     transport::PopulationSession session(conn, registry, std::move(session_cfg));
     const auto finished = session.Run();
-    std::fprintf(stderr, "population_venue: session %s done (%s)\n", id.c_str(),
-                 FinishName(finished));
+    PV_INFO("session {} done ({})", id, FinishName(finished));
 }
 
 // Like ServeCreateQueues, but returns nullopt on timeout so the app can check stop.
@@ -104,19 +103,18 @@ int App::Run() {
     using transport::UdsListener;
 
     try {
-        std::fprintf(stderr, "population_venue: listen %s (drain_ms=%u)\n", cfg_.uds_path.c_str(),
-                     cfg_.drain_timeout_ms);
+        PV_INFO("listen {} (drain_ms={})", cfg_.uds_path, cfg_.drain_timeout_ms);
 
         auto listener = UdsListener::Bind(cfg_.uds_path);
         if (!listener.valid()) {
-            std::fprintf(stderr, "population_venue: bind failed\n");
+            PV_ERROR("bind failed");
             return 1;
         }
 
         std::atomic<bool>& shutdown = ShutdownFlag();
 
         while (!StopRequested()) {
-            std::fprintf(stderr, "population_venue: waiting for engine...\n");
+            PV_INFO("waiting for engine...");
             int raw = -2;
             while (!StopRequested()) {
                 raw = listener.AcceptTimeout(kAcceptPollMs);
@@ -126,18 +124,18 @@ int App::Run() {
                 break;
             }
             if (StopRequested()) {
-                std::fprintf(stderr, "population_venue: shutdown — stop accept\n");
+                PV_INFO("shutdown — stop accept");
                 break;
             }
             if (raw < 0) {
-                std::fprintf(stderr, "population_venue: accept failed\n");
+                PV_ERROR("accept failed");
                 return 1;
             }
 
             UdsConn conn(raw);
             QueueRegistry registry;
             std::vector<std::thread> sessions;
-            std::fprintf(stderr, "population_venue: engine connected\n");
+            PV_INFO("engine connected");
 
             while (conn.valid() && !StopRequested()) {
                 auto ack_opt = ServeCreateQueuesPoll(conn, registry, kCreatePollMs);
@@ -147,31 +145,26 @@ int App::Run() {
                 const auto& ack = *ack_opt;
                 if (ack.status != AckStatus::Ok) {
                     if (ack.population_id.empty()) {
-                        std::fprintf(stderr, "population_venue: control EOF or bad create\n");
+                        PV_WARN("control EOF or bad create");
                         break;
                     }
-                    std::fprintf(stderr, "population_venue: create rejected: %s\n",
-                                 ack.message.c_str());
+                    PV_WARN("create rejected: {}", ack.message);
                     continue;
                 }
 
                 if (StopRequested()) {
-                    std::fprintf(stderr,
-                                 "population_venue: shutdown — reject new create after stop\n");
+                    PV_INFO("shutdown — reject new create after stop");
                     break;
                 }
 
-                std::fprintf(stderr, "population_venue: start population_id=%s\n",
-                             ack.population_id.c_str());
+                PV_INFO("start population_id={}", ack.population_id);
 
                 sessions.emplace_back(RunPopulationSession, std::ref(conn), std::ref(registry),
                                       ack.population_id, cfg_.drain_timeout_ms, &shutdown);
             }
 
             if (StopRequested() && !sessions.empty()) {
-                std::fprintf(stderr,
-                             "population_venue: shutdown — waiting for %zu session(s)\n",
-                             sessions.size());
+                PV_INFO("shutdown — waiting for {} session(s)", sessions.size());
             }
 
             for (auto& t : sessions) {
@@ -185,10 +178,10 @@ int App::Run() {
             }
         }
 
-        std::fprintf(stderr, "population_venue: exit 0 (graceful)\n");
+        PV_INFO("exit 0 (graceful)");
         return 0;
     } catch (const std::exception& ex) {
-        std::fprintf(stderr, "population_venue: %s\n", ex.what());
+        PV_ERROR("{}", ex.what());
         return 1;
     }
 }

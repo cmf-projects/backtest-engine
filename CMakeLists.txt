@@ -28,6 +28,45 @@ FetchContent_Declare(tomlplusplus
 
 FetchContent_MakeAvailable(tomlplusplus)
 
+# ---------------------------------------------------------------------------
+# spdlog (venue logging; IMPL 5.2–5.3) — level/format baked at compile time
+# ---------------------------------------------------------------------------
+set(CMF_LOG_LEVEL "info" CACHE STRING "Compile-time log level: trace|debug|info|warn|error")
+set_property(CACHE CMF_LOG_LEVEL PROPERTY STRINGS trace debug info warn error)
+set(CMF_LOG_FORMAT "plain" CACHE STRING "Compile-time log format: plain|json")
+set_property(CACHE CMF_LOG_FORMAT PROPERTY STRINGS plain json)
+
+if(CMF_LOG_LEVEL STREQUAL "trace")
+  set(CMF_SPDLOG_ACTIVE_LEVEL "SPDLOG_LEVEL_TRACE")
+elseif(CMF_LOG_LEVEL STREQUAL "debug")
+  set(CMF_SPDLOG_ACTIVE_LEVEL "SPDLOG_LEVEL_DEBUG")
+elseif(CMF_LOG_LEVEL STREQUAL "warn")
+  set(CMF_SPDLOG_ACTIVE_LEVEL "SPDLOG_LEVEL_WARN")
+elseif(CMF_LOG_LEVEL STREQUAL "error")
+  set(CMF_SPDLOG_ACTIVE_LEVEL "SPDLOG_LEVEL_ERROR")
+else()
+  set(CMF_SPDLOG_ACTIVE_LEVEL "SPDLOG_LEVEL_INFO")
+endif()
+
+if(CMF_LOG_FORMAT STREQUAL "json")
+  set(CMF_LOG_FORMAT_JSON 1)
+else()
+  set(CMF_LOG_FORMAT_JSON 0)
+endif()
+
+set(CMF_SPDLOG_TAG "v1.15.1" CACHE STRING "Git tag of spdlog")
+set(SPDLOG_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
+set(SPDLOG_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(SPDLOG_BUILD_BENCH OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(spdlog
+  GIT_REPOSITORY https://github.com/gabime/spdlog.git
+  GIT_TAG        ${CMF_SPDLOG_TAG}
+  GIT_SHALLOW    TRUE
+  GIT_PROGRESS   TRUE)
+
+FetchContent_MakeAvailable(spdlog)
+
 find_package(Threads REQUIRED)
 
 # ---------------------------------------------------------------------------
@@ -85,6 +124,7 @@ target_link_libraries(transport_lib PUBLIC cmf::population cmf::dataset Threads:
 add_library(population_venue_lib
   src/population_venue/config/config.cc
   src/population_venue/shutdown/shutdown.cc
+  src/population_venue/log/log.cc
   src/population_venue/app/app.cc)
 add_library(cmf::population_venue ALIAS population_venue_lib)
 target_include_directories(population_venue_lib
@@ -92,8 +132,12 @@ target_include_directories(population_venue_lib
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>")
 target_compile_features(population_venue_lib PUBLIC cxx_std_20)
 target_link_libraries(population_venue_lib
-  PUBLIC cmf::transport
+  PUBLIC cmf::transport spdlog::spdlog
   PRIVATE tomlplusplus::tomlplusplus)
+target_compile_definitions(population_venue_lib
+  PUBLIC
+    SPDLOG_ACTIVE_LEVEL=${CMF_SPDLOG_ACTIVE_LEVEL}
+    CMF_LOG_FORMAT_JSON=${CMF_LOG_FORMAT_JSON})
 
 add_executable(population_venue apps/population_venue/main.cc)
 target_link_libraries(population_venue PRIVATE cmf::population_venue)

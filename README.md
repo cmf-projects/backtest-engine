@@ -47,7 +47,16 @@ SPSC queues are **in-process** for now (shm later); Open still carries `dataset_
 **Shutdown:** `SIGINT` / `SIGTERM` (Ctrl+C) stops Accept/Create, finishes live populations with
 `SessionEnded{fatal, "venue shutdown"}`, joins session threads, unlinks the UDS, exits 0.
 
-Knobs: `POPULATION_UDS`, `POPULATION_DRAIN_MS`, `CONFIG=options/population_venue.toml`.
+**Logging (spdlog):** level and format are **compile-time** (lower levels are stripped from
+the binary via `SPDLOG_ACTIVE_LEVEL`). Rebuild to change them:
+
+```bash
+make clean
+make build CMF_LOG_LEVEL=debug CMF_LOG_FORMAT=json   # trace|debug|info|warn|error ; plain|json
+make population
+```
+
+Knobs (runtime): `POPULATION_UDS`, `POPULATION_DRAIN_MS`, `CONFIG=options/population_venue.toml`.
 
 ## Configure
 

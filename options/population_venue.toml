@@ -1,5 +1,6 @@
 # Population venue (UDS + SPSC).
-# Override: CONFIG=options/....toml or POPULATION_UDS=... / POPULATION_DRAIN_MS=...
+# Override: CONFIG=... / POPULATION_UDS / POPULATION_DRAIN_MS
+# Log level/format: compile-time via CMake (CMF_LOG_LEVEL / CMF_LOG_FORMAT).
 
 uds_path = "/tmp/cmf-population.sock"
 drain_timeout_ms = 60000

@@ -12,7 +12,10 @@ POPULATION_SMOKE := $(BUILD_DIR)/population_smoke
 POPULATION_CONFIG ?= options/population_venue.toml
 POPULATION_UDS   ?= /tmp/cmf-population.sock
 POPULATION_DATASET ?= testdata/population/smoke.jsonl
-CMAKE_FLAGS      ?= -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+CMF_LOG_LEVEL    ?= info
+CMF_LOG_FORMAT   ?= plain
+CMAKE_FLAGS      ?= -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+                    -DCMF_LOG_LEVEL=$(CMF_LOG_LEVEL) -DCMF_LOG_FORMAT=$(CMF_LOG_FORMAT)
 
 .PHONY: all build cmake population population-smoke clean help test
 
@@ -25,6 +28,8 @@ help:
 	@echo "  make population-smoke  - in-process Open/Tick/Advance/End smoke"
 	@echo "  make test              - build + ctest"
 	@echo "  make clean             - remove $(BUILD_DIR)"
+	@echo "Log (compile-time): CMF_LOG_LEVEL=$(CMF_LOG_LEVEL) CMF_LOG_FORMAT=$(CMF_LOG_FORMAT)"
+	@echo "  e.g. make clean && make build CMF_LOG_LEVEL=debug CMF_LOG_FORMAT=json"
 
 cmake: $(BUILD_DIR)/CMakeCache.txt
 

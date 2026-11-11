@@ -19,7 +19,7 @@
 | `apps/population_venue` + smoke | listen UDS; in-process smoke |
 | `third_party/ipc.h` | не подключён (эталон SPMC; свой SPSC уже есть) |
 
-Gap до ТЗ: логер (5.2–5.3); Submit ещё без recoverable Ack.
+Gap до ТЗ: Submit ещё без recoverable Ack; квоты / index / multi-pop fairness — позже.
 
 ---
 
@@ -118,8 +118,8 @@ CMF binary не ломаем. Population lib линкуем в новый app.
 | # | Задача | Done when |
 | --- | --- | --- |
 | 5.1 | Graceful shutdown по **Ctrl+C** (`SIGINT` / при необходимости `SIGTERM`): перестать Accept/Create, дождаться drain текущих `PopulationSession` (или их `Finish*` с понятным reason), затем teardown listener/UDS | ✅ SIGINT/SIGTERM → stop accept/create; sessions `FinishFatal("venue shutdown")`; exit 0 |
-| 5.2 | Логер: **уровни** (debug/info/warn/error), два формата вывода — **plain** (человекочитаемый) и **JSON** (одна строка / event); конфиг формата и level из toml/env | venue/session пишут через логер, не через сырой `fprintf`; переключение plain↔json без перекомпиляции |
-| 5.3 | Не писать логер с нуля, если можно взять готовое: **в этом репо логера нет**; кандидаты снаружи — `spdlog` (levels + sinks; JSON через pattern/custom sink) или тонкая обёртка над ним. Выбрать одно, зафиксировать в CMake/FetchContent | зависимость подключена; короткий usage в README |
+| 5.2 | Логер: **уровни** (trace/debug/info/warn/error), два формата вывода — **plain** (человекочитаемый) и **JSON** (одна строка / event); level/format **compile-time** (`CMF_LOG_*`) | ✅ `PV_*` + `CMF_LOG_LEVEL`/`CMF_LOG_FORMAT` |
+| 5.3 | Не писать логер с нуля, если можно взять готовое: **в этом репо логера нет**; кандидаты снаружи — `spdlog` (levels + sinks; JSON через pattern/custom sink) или тонкая обёртка над ним. Выбрать одно, зафиксировать в CMake/FetchContent | ✅ spdlog v1.15.1 FetchContent; README usage |
 
 Порядок внутри вехи: сначала 5.1 (не зависит от логера), затем 5.2–5.3 (можно заменить `fprintf` по мере появления sinks).
 
