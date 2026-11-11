@@ -171,18 +171,16 @@ PopulationSession::Step PopulationSession::OnOpen(const std::vector<std::uint8_t
 }
 
 PopulationSession::Step PopulationSession::OnOrders(const std::vector<std::uint8_t>& payload) {
-    BusOrderBatch batch;
-    if (!DecodeBusOrderBatch(payload.data(), payload.size(), batch)) {
+    if (!DecodeBusOrderBatch(payload.data(), payload.size(), order_batch_buf_)) {
         return FinishFatal(ErrorCode::Internal, "bad OrderBatch", false);
     }
     if (pop_ == nullptr) {
         return FinishFatal(ErrorCode::Internal, "no population", false);
     }
 
-    const population::OrderBatch domain = ToOrderBatch(batch);
-    const population::OrderBatchResult result = pop_->Submit(domain);
-    const auto failures = result.Failures(domain);
-    if (!failures.empty()) {
+    ToOrderBatchInto(order_batch_buf_, domain_batch_);
+    const population::OrderBatchResult& result = pop_->Submit(domain_batch_);
+    if (result.HasFailure()) {
         EncodeBusOrdersAckInto(MakeOrdersAckReject(ErrorCode::Internal, "bad orders"),
                                encode_buf_);
         (void)SendOut(BusMsgType::OrdersAck, encode_buf_);
@@ -190,12 +188,13 @@ PopulationSession::Step PopulationSession::OnOrders(const std::vector<std::uint8
         return FinishFatal(ErrorCode::Internal, "OrderBatch rejected", false);
     }
 #if SPDLOG_ACTIVE_LEVEL <= SPDLOG_LEVEL_TRACE
-    for (const auto& o : batch.orders) {
+    for (const auto& o : order_batch_buf_.orders) {
         LOG_TRACE("submit oid={} slot={} comp={} side={} px={} qty={} tif={}", o.client_order_id,
                   o.slot_id, o.component_id, static_cast<unsigned>(o.side), o.price, o.qty,
                   static_cast<unsigned>(o.tif));
     }
-    LOG_TRACE("submit ok orders={} cancels={}", batch.orders.size(), batch.cancels.size());
+    LOG_TRACE("submit ok orders={} cancels={}", order_batch_buf_.orders.size(),
+              order_batch_buf_.cancels.size());
 #endif
     EncodeBusOrdersAckInto(MakeOrdersAckOk(), encode_buf_);
     if (!SendOut(BusMsgType::OrdersAck, encode_buf_)) {

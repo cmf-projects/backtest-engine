@@ -64,6 +64,7 @@ Override via `CONFIG` / `POPULATION_UDS` / `POPULATION_DRAIN_MS`.
 - One **`pop_ts`** per population; timing knobs are **`md_lag`** and **`Δ` only** (`Δ ≥ 1`).
 - Bundle contract: up to **3** components (spot / futures / option); missing component → fewer books, not empty stubs. **Population accepts 1…3** (IMPL 3.2); MakeTick books for late components / match polish → 3.3–3.4.
 - Fatal protocol / bad Open / bad OrderBatch → Error + `SessionEnded{fatal}` + drain Close|timeout (recoverable OrdersAck is later).
+- **`client_order_id` per population:** Engine assigns dense consecutive `uint64` starting at 1, strictly increasing (no gaps). Book key remains `(slot_id, client_order_id)`. Do not assume sparse/random oids when designing venue structures.
 
 ---
 

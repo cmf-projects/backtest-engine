@@ -98,6 +98,13 @@ struct OrderBatchResult {
     std::vector<OrderResult> order_results;
     std::vector<OrderResult> cancel_results;
 
+    [[nodiscard]] bool HasFailure() const noexcept {
+        return std::any_of(order_results.begin(), order_results.end(),
+                           [](OrderResult r) { return r != OrderResult::Ok; }) ||
+               std::any_of(cancel_results.begin(), cancel_results.end(),
+                           [](OrderResult r) { return r != OrderResult::Ok; });
+    }
+
     // Correlates parallel result vectors with the submitted batch.
     [[nodiscard]] std::vector<OrderLineFailure> Failures(
         const OrderBatch& batch) const {

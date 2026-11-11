@@ -21,6 +21,7 @@ namespace transport {
     const std::vector<BusSlotConfig>& in);
 
 [[nodiscard]] population::OrderBatch ToOrderBatch(const BusOrderBatch& in);
+void ToOrderBatchInto(const BusOrderBatch& in, population::OrderBatch& out);
 [[nodiscard]] BusTick ToBusTick(const population::TickView& in);
 void ToBusTickInto(const population::TickView& in, BusTick& out);
 void FormatDecimalInto(double value, std::string& out);

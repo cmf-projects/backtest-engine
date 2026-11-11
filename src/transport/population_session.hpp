@@ -83,6 +83,8 @@ private:
     std::vector<std::uint8_t> encode_buf_;  // reused by Encode*Into
     std::vector<std::uint8_t> recv_buf_;    // reused by TryRecv
     BusTick tick_buf_;                      // reused by ToBusTickInto
+    BusOrderBatch order_batch_buf_;         // reused by OnOrders decode
+    population::OrderBatch domain_batch_;   // reused by ToOrderBatchInto
 };
 
 }  // namespace transport

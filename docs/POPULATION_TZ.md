@@ -409,6 +409,12 @@ ack / partial / fill / cancel / reject — по нему. `Cancel` несёт **
 новый ордер — только с новым id. Уникальность в пределах слота — обязанность
 Engine; venue reject’ит дубликат живого id.
 
+**Нумерация (контракт Engine):** в рамках **одной population** `client_order_id`
+— плотная возрастающая последовательность `uint64`: старт с **1**, каждый новый
+ордер = предыдущий max + 1 (без дыр, без отката назад). Один и тот же числовой
+id может жить на разных `slot_id` (ключ всё ещё пара). Это правило — чтобы
+venue/engine могли опираться на dense-индекс по oid, а не только на hash-set.
+
 **Закрыто по lifecycle (§5.5):** **один** главный UDS; fatal → Error + SessionEnded
 → **drain in до Close** (не стопать read — иначе дедлок на полной очереди) иначе
 timeout; конец pop сносит только её SPSC.
@@ -511,7 +517,7 @@ shutdown only. In-process API не в P0. **gRPC не входит в план.*
 | Выравнивание лент | Merge по `ts_ns` + keep last; без оффлайн-решётки |
 | Open / mid-run | `population_id`+params → fix; конфиг mid-run не трогаем |
 | Лимит L2 | 64 уровня на сторону |
-| Id ордера | `(slot_id, client_order_id)`; venue-`order_id` нет; Cancel = тот же id |
+| Id ордера | `(slot_id, client_order_id)`; venue-`order_id` нет; Cancel = тот же id; **per-pop dense + strictly increasing from 1** |
 | Resting priority в слоте | Порядок отправки стратегией (раньше → раньше в матче) |
 | Между стратегиями | Нет конкуренции, нет видимости чужих филлов; Tick — батч по слотам |
 | TIF | DAY / IOC / FOK; `UNSPECIFIED` → `Error` |

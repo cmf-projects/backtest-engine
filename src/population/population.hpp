@@ -2,6 +2,7 @@
 
 #include "population/book_diff.hpp"
 #include "population/clock.hpp"
+#include "population/dense_oid_set.hpp"
 #include "population/impact.hpp"
 #include "population/merged_tape.hpp"
 #include "population/order.hpp"
@@ -66,7 +67,8 @@ public:
 
     // Validate + accept into working (effective_ts = pop_ts + Δ). No match.
     // Wire: no failures → OrdersAck ok; else OrdersAck.errors[] (no partial applies).
-    [[nodiscard]] OrderBatchResult Submit(const OrderBatch& batch);
+    // Validates + applies all-or-nothing. Result reused until next Submit.
+    [[nodiscard]] const OrderBatchResult& Submit(const OrderBatch& batch);
 
     [[nodiscard]] bool Advance();
 
@@ -101,19 +103,6 @@ private:
     struct SlotSendState {
         // component_id → last sent book for that component
         std::unordered_map<std::string, ComponentSend> components;
-    };
-
-    // Batch de-dupe key: (slot_id, client_order_id). Ids are unique per slot, not
-    // globally — same client_order_id on two slots is fine.
-    using OrderKey = std::pair<std::uint32_t, std::uint64_t>;
-
-    struct OrderKeyHash {
-        [[nodiscard]] std::size_t operator()(const OrderKey& key) const noexcept {
-            std::size_t h = std::hash<std::uint32_t>{}(key.first);
-            // boost::hash_combine(h, client_order_id)
-            h ^= std::hash<std::uint64_t>{}(key.second) + 0x9e3779b9u + (h << 6) + (h >> 2);
-            return h;
-        }
     };
 
     // (slot_id, component_id) → ImpactState
@@ -158,13 +147,16 @@ private:
     std::uint64_t last_match_pop_ts_ns_ = 0;
     bool matched_this_pop_ = false;
 
-    // Hot-path scratch (reused across MakeTick / match / Advance).
+    // Hot-path scratch (reused across MakeTick / match / Advance / Submit).
     MergedStep step_scratch_;
     TickView tick_scratch_;
     SnapshotEvent view_scratch_;
     BookDiffResult diff_scratch_;
     std::vector<Level> match_bids_scratch_;
     std::vector<Level> match_asks_scratch_;
+    DenseOidStampSet pending_new_keys_;
+    DenseOidStampSet pending_cancel_keys_;
+    OrderBatchResult submit_result_;
 };
 
 }  // namespace population

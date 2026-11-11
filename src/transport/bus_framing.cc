@@ -307,15 +307,16 @@ std::vector<std::uint8_t> EncodeBusOrderBatch(const BusOrderBatch& msg) {
 bool DecodeBusOrderBatch(const std::uint8_t* data, std::size_t size, BusOrderBatch& out) {
     const std::uint8_t* p = data;
     const std::uint8_t* end = data + size;
-    BusOrderBatch tmp;
     std::uint32_t n_orders = 0;
     std::uint32_t n_cancels = 0;
     if (!ReadU32(p, end, n_orders)) {
         return false;
     }
-    tmp.orders.reserve(n_orders);
+    if (out.orders.size() != n_orders) {
+        out.orders.resize(n_orders);
+    }
     for (std::uint32_t i = 0; i < n_orders; ++i) {
-        BusOrder o;
+        BusOrder& o = out.orders[i];
         if (!ReadU32(p, end, o.slot_id) || !ReadU64(p, end, o.client_order_id) ||
             !ReadString(p, end, o.component_id) || p >= end) {
             return false;
@@ -325,24 +326,20 @@ bool DecodeBusOrderBatch(const std::uint8_t* data, std::size_t size, BusOrderBat
             return false;
         }
         o.tif = static_cast<BusTimeInForce>(*p++);
-        tmp.orders.push_back(std::move(o));
     }
     if (!ReadU32(p, end, n_cancels)) {
         return false;
     }
-    tmp.cancels.reserve(n_cancels);
+    if (out.cancels.size() != n_cancels) {
+        out.cancels.resize(n_cancels);
+    }
     for (std::uint32_t i = 0; i < n_cancels; ++i) {
-        BusCancel c;
+        BusCancel& c = out.cancels[i];
         if (!ReadU32(p, end, c.slot_id) || !ReadU64(p, end, c.client_order_id)) {
             return false;
         }
-        tmp.cancels.push_back(std::move(c));
     }
-    if (p != end) {
-        return false;
-    }
-    out = std::move(tmp);
-    return true;
+    return p == end;
 }
 
 void EncodeBusOrdersAckInto(const BusOrdersAck& msg, std::vector<std::uint8_t>& out) {

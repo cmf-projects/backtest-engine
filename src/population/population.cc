@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
-#include <unordered_set>
 #include <utility>
 
 namespace population {
@@ -454,26 +453,32 @@ OrderResult Population::ValidateCancel(const CancelOrder& cancel) const {
     return OrderResult::Ok;
 }
 
-OrderBatchResult Population::Submit(const OrderBatch& batch) {
-    OrderBatchResult result;
-    result.order_results.reserve(batch.orders.size());
-    result.cancel_results.reserve(batch.cancels.size());
+const OrderBatchResult& Population::Submit(const OrderBatch& batch) {
+    auto& result = submit_result_;
+    result.order_results.clear();
+    result.cancel_results.clear();
+    if (result.order_results.capacity() < batch.orders.size()) {
+        result.order_results.reserve(batch.orders.size());
+    }
+    if (result.cancel_results.capacity() < batch.cancels.size()) {
+        result.cancel_results.reserve(batch.cancels.size());
+    }
 
     // All-or-nothing: validate the whole batch first (wire → OrdersAck vs Error).
-    // Walk every item for per-line codes; all_ok avoids a second scan.
+    // Dense (slot, oid) stamps — O(1) clear via epoch; no hash-node per line.
     bool all_ok = true;
-    std::unordered_set<OrderKey, OrderKeyHash> pending_new;
+    pending_new_keys_.Clear();
     for (const NewOrder& order : batch.orders) {
         OrderResult check = ValidateNewOrder(order);
         if (check == OrderResult::Ok) {
-            const OrderKey key{order.slot_id, order.client_order_id};
             const bool dup_live =
                 slot_orders_.at(order.slot_id).FindLive(order.client_order_id) != nullptr;
-            const bool dup_batch = pending_new.count(key) > 0;
+            const bool dup_batch =
+                pending_new_keys_.Contains(order.slot_id, order.client_order_id);
             if (dup_live || dup_batch) {
                 check = OrderResult::DuplicateOrderId;
             } else {
-                pending_new.insert(key);
+                (void)pending_new_keys_.Insert(order.slot_id, order.client_order_id);
             }
         }
         if (check != OrderResult::Ok) {
@@ -482,19 +487,17 @@ OrderBatchResult Population::Submit(const OrderBatch& batch) {
         result.order_results.push_back(check);
     }
 
-    std::unordered_set<OrderKey, OrderKeyHash> pending_cancel;
+    pending_cancel_keys_.Clear();
     for (const CancelOrder& cancel : batch.cancels) {
         OrderResult check = ValidateCancel(cancel);
-        const OrderKey key{cancel.slot_id, cancel.client_order_id};
-        if (check == OrderResult::NoSuchOrder && pending_new.count(key) > 0) {
+        if (check == OrderResult::NoSuchOrder &&
+            pending_new_keys_.Contains(cancel.slot_id, cancel.client_order_id)) {
             // Cancel targets an order introduced earlier in this same batch.
             check = OrderResult::Ok;
         }
         if (check == OrderResult::Ok) {
-            if (pending_cancel.count(key) > 0) {
+            if (!pending_cancel_keys_.Insert(cancel.slot_id, cancel.client_order_id)) {
                 check = OrderResult::NoSuchOrder;
-            } else {
-                pending_cancel.insert(key);
             }
         }
         if (check != OrderResult::Ok) {

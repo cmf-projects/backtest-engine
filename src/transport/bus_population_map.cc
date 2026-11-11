@@ -119,11 +119,13 @@ std::vector<population::SlotConfig> ToSlotConfigs(const std::vector<BusSlotConfi
     return out;
 }
 
-population::OrderBatch ToOrderBatch(const BusOrderBatch& in) {
-    population::OrderBatch out;
-    out.orders.reserve(in.orders.size());
-    for (const auto& o : in.orders) {
-        population::NewOrder n;
+void ToOrderBatchInto(const BusOrderBatch& in, population::OrderBatch& out) {
+    if (out.orders.size() != in.orders.size()) {
+        out.orders.resize(in.orders.size());
+    }
+    for (std::size_t i = 0; i < in.orders.size(); ++i) {
+        const auto& o = in.orders[i];
+        population::NewOrder& n = out.orders[i];
         n.slot_id = o.slot_id;
         n.client_order_id = o.client_order_id;
         n.component_id = o.component_id;
@@ -133,15 +135,19 @@ population::OrderBatch ToOrderBatch(const BusOrderBatch& in) {
         if (!ParseDecimal(o.price, n.price)) {
             n.price = 0.0;
         }
-        out.orders.push_back(std::move(n));
     }
-    out.cancels.reserve(in.cancels.size());
-    for (const auto& c : in.cancels) {
-        out.cancels.push_back(population::CancelOrder{
-            .slot_id = c.slot_id,
-            .client_order_id = c.client_order_id,
-        });
+    if (out.cancels.size() != in.cancels.size()) {
+        out.cancels.resize(in.cancels.size());
     }
+    for (std::size_t i = 0; i < in.cancels.size(); ++i) {
+        out.cancels[i].slot_id = in.cancels[i].slot_id;
+        out.cancels[i].client_order_id = in.cancels[i].client_order_id;
+    }
+}
+
+population::OrderBatch ToOrderBatch(const BusOrderBatch& in) {
+    population::OrderBatch out;
+    ToOrderBatchInto(in, out);
     return out;
 }
 

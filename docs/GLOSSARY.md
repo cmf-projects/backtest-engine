@@ -29,7 +29,7 @@ Terms for the multi-strategy population venue path (UDS + SPSC).
 | **overlay** | Per-slot levels where effective differs from `shared_book` (resting/impact). Absolute qty; `0` removes; empty = identical to shared. |
 | **BookDiff (wire)** | Changed levels with **absolute** qty (“now this much at price”), not ±delta; `0` removes the level (same rule as CMF `I`). Used for `shared_book` diffs and for `overlay`. |
 | **Trades (exec field)** | Separate field on each tick: fills/trades for that slot this step. Strategy uses this for margin/turnover/PnL — not inferred from book diff. |
-| **client_order_id** | Client-assigned order key for the population UDS/SPSC path. Lifetime id of the order: Order, fills, Cancel, and rejects all use the same id. Book key is `(slot_id, client_order_id)`. No separate venue `order_id` on this path (unlike CMF `ord_id`). |
+| **client_order_id** | Client-assigned order key for the population UDS/SPSC path. Lifetime id of the order: Order, fills, Cancel, and rejects all use the same id. Book key is `(slot_id, client_order_id)`. No separate venue `order_id` on this path (unlike CMF `ord_id`). **Contract:** within one population, ids are assigned by the Engine as **dense consecutive `uint64` starting at 1 and strictly increasing** (no gaps, no reuse while live; after terminal — only a new higher id). Enables dense per-pop indexing later. |
 
 **Removed from the population path:** per-slot `virtual_ts` desync, `HorizonOffset` catch-up, `argmax(offset)` leader. Timing differences between strategies are **`md_lag` and `Δ` only**; trading differences are orders + impact.
 
