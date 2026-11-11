@@ -4,6 +4,7 @@
 #include "transport/bus_framing.hpp"
 #include "transport/bus_messages.hpp"
 #include "transport/bus_population_map.hpp"
+#include "transport/log.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -27,7 +28,7 @@ bool WaitProgress(SpscBus& in, BusMsgType& type, std::vector<std::uint8_t>& payl
         if (result != BusRecvResult::Empty) {
             return true;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        std::this_thread::yield();
     }
     result = BusRecvResult::Empty;
     return false;
@@ -104,6 +105,17 @@ PopulationSession::Step PopulationSession::SendTickFromPopulation() {
         return FinishFatal(ErrorCode::Internal, "no population", false);
     }
     const BusTick tick = ToBusTick(pop_->MakeTick());
+#if SPDLOG_ACTIVE_LEVEL <= SPDLOG_LEVEL_TRACE
+    for (const auto& slot : tick.slots) {
+        for (const auto& tr : slot.trades) {
+            LOG_TRACE("fill pop_ts={} slot={} oid={} comp={} px={} qty={} leaves={} exec={}",
+                      tick.pop_ts_ns, slot.slot_id, tr.client_order_id, tr.component_id, tr.price,
+                      tr.qty, tr.leaves, static_cast<unsigned>(tr.exec_type));
+        }
+    }
+    LOG_TRACE("tick pop_ts={} slots={} books_shared={}", tick.pop_ts_ns, tick.slots.size(),
+              tick.books.size());
+#endif
     if (!SendOut(BusMsgType::Tick, EncodeBusTick(tick))) {
         return FinishFatal(ErrorCode::Internal, "Tick send failed", false);
     }
@@ -174,6 +186,14 @@ PopulationSession::Step PopulationSession::OnOrders(const std::vector<std::uint8
         // P0: broken batch is fatal (recoverable OrdersAck later).
         return FinishFatal(ErrorCode::Internal, "OrderBatch rejected", false);
     }
+#if SPDLOG_ACTIVE_LEVEL <= SPDLOG_LEVEL_TRACE
+    for (const auto& o : batch.orders) {
+        LOG_TRACE("submit oid={} slot={} comp={} side={} px={} qty={} tif={}", o.client_order_id,
+                  o.slot_id, o.component_id, static_cast<unsigned>(o.side), o.price, o.qty,
+                  static_cast<unsigned>(o.tif));
+    }
+    LOG_TRACE("submit ok orders={} cancels={}", batch.orders.size(), batch.cancels.size());
+#endif
     if (!SendOut(BusMsgType::OrdersAck, EncodeBusOrdersAck(MakeOrdersAckOk()))) {
         return FinishFatal(ErrorCode::Internal, "OrdersAck send failed", false);
     }

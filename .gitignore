@@ -1,3 +1,6 @@
+# Generated load tapes (scripts/gen_noise_tapes.py)
+testdata/population/noise/
+
 # Build
 build/
 cmake-build-*/

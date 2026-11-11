@@ -14,12 +14,16 @@ POPULATION_CLIENT := $(BUILD_DIR)/population_client
 POPULATION_CONFIG ?= options/population_venue.toml
 POPULATION_UDS   ?= /tmp/cmf-population.sock
 POPULATION_DATASET ?= testdata/population/smoke.jsonl
+POPULATION_NOISE_DIR ?= testdata/population/noise
+POPULATION_NOISE_N ?= 1000000
+CLIENT_POPS ?= 1
 CMF_LOG_LEVEL    ?= info
 CMF_LOG_FORMAT   ?= plain
 CMAKE_FLAGS      ?= -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
                     -DCMF_LOG_LEVEL=$(CMF_LOG_LEVEL) -DCMF_LOG_FORMAT=$(CMF_LOG_FORMAT)
 
-.PHONY: all build cmake population population-smoke population-client clean help test
+.PHONY: all build cmake population population-smoke population-client population-noise \
+        clean help test
 
 all: build
 
@@ -29,6 +33,7 @@ help:
 	@echo "  make population         - population UDS venue (CONFIG=$(POPULATION_CONFIG))"
 	@echo "  make population-smoke   - Open/Tick/Advance/End smoke (shm SPSC)"
 	@echo "  make population-client  - external take bid/ask client → $(POPULATION_UDS)"
+	@echo "  make population-noise   - gen spot/fut/option JSONL (N=$(POPULATION_NOISE_N))"
 	@echo "  make test               - build + ctest"
 	@echo "  make clean              - remove $(BUILD_DIR)"
 	@echo "Log (compile-time): CMF_LOG_LEVEL=$(CMF_LOG_LEVEL) CMF_LOG_FORMAT=$(CMF_LOG_FORMAT)"
@@ -57,7 +62,10 @@ population-smoke: $(POPULATION_SMOKE)
 	./$(POPULATION_SMOKE) $(POPULATION_DATASET) $(POPULATION_UDS)-smoke
 
 population-client: $(POPULATION_CLIENT)
-	./$(POPULATION_CLIENT) $(POPULATION_UDS) $(POPULATION_DATASET)
+	CLIENT_POPS=$(CLIENT_POPS) ./$(POPULATION_CLIENT) $(POPULATION_UDS) $(POPULATION_DATASET) $(CLIENT_POPS)
+
+population-noise:
+	python3 scripts/gen_noise_tapes.py --n $(POPULATION_NOISE_N) --out-dir $(POPULATION_NOISE_DIR)
 
 test: build
 	ctest --test-dir $(BUILD_DIR) --output-on-failure

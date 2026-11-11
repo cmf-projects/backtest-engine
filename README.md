@@ -49,6 +49,22 @@ Engine flow: connect UDS → `CreateQueues` → mmap shm names from `CreateAck` 
 `Open` / `Tick` / `OrderBatch` / `Advance` / `Close`.  
 `dataset_path` in Open is opened **by the venue** (path must exist on the venue host).
 
+**Noise bundle (spot / fut / option):** generate white-noise tapes, then point the client at the directory:
+
+```bash
+make population-noise                          # → testdata/population/noise/{spot,fut,option}.jsonl
+# optional: POPULATION_NOISE_N=10000 make population-noise
+make clean && make build CMF_LOG_LEVEL=trace   # venue TRACE for submit/fill
+# terminal 1
+make population
+# terminal 2
+POPULATION_DATASET=testdata/population/noise make population-client
+# concurrent populations on one UDS:
+POPULATION_DATASET=testdata/population/noise CLIENT_POPS=3 make population-client
+```
+
+Client summary prints fill sim-delay (`fill_pop_ts - submit_pop_ts`); with `delta_ns=1` and 1 ms tape step that is typically one event step.
+
 **Shutdown:** `SIGINT` / `SIGTERM` (Ctrl+C) stops Accept/Create, finishes live populations with
 `SessionEnded{fatal, "venue shutdown"}`, joins session threads, unlinks the UDS, exits 0.
 

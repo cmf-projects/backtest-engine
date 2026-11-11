@@ -117,7 +117,10 @@ target_include_directories(transport_lib
   PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>")
 target_compile_features(transport_lib PUBLIC cxx_std_20)
-target_link_libraries(transport_lib PUBLIC cmf::population cmf::dataset Threads::Threads)
+target_link_libraries(transport_lib PUBLIC cmf::population cmf::dataset spdlog::spdlog Threads::Threads)
+target_compile_definitions(transport_lib
+  PUBLIC
+    SPDLOG_ACTIVE_LEVEL=${CMF_SPDLOG_ACTIVE_LEVEL})
 # shm_open lives in librt on older glibc; no-op / unused on modern libcs that fold it in.
 find_library(CMF_LIBRT rt)
 if(CMF_LIBRT)

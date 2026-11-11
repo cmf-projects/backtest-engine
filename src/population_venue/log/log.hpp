@@ -4,22 +4,12 @@
 //   -DCMF_LOG_LEVEL=trace|debug|info|warn|error  → SPDLOG_ACTIVE_LEVEL (lower levels stripped)
 //   -DCMF_LOG_FORMAT_JSON=0|1                    → plain vs json pattern
 // Call InitLogging() once from main.
+// Macros: LOG_TRACE / LOG_DEBUG / LOG_INFO / LOG_WARN / LOG_ERROR (see transport/log.hpp).
 
-#ifndef SPDLOG_ACTIVE_LEVEL
-#define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_INFO
-#endif
-
-#include <spdlog/spdlog.h>
+#include "transport/log.hpp"
 
 namespace population_venue {
 
 void InitLogging();
 
 }  // namespace population_venue
-
-// Compile-time gated (below SPDLOG_ACTIVE_LEVEL → no code in the binary).
-#define LOG_TRACE(...) SPDLOG_TRACE(__VA_ARGS__)
-#define LOG_DEBUG(...) SPDLOG_DEBUG(__VA_ARGS__)
-#define LOG_INFO(...) SPDLOG_INFO(__VA_ARGS__)
-#define LOG_WARN(...) SPDLOG_WARN(__VA_ARGS__)
-#define LOG_ERROR(...) SPDLOG_ERROR(__VA_ARGS__)
