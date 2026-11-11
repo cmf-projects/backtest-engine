@@ -5,6 +5,7 @@
 #include "transport/bus_messages.hpp"
 #include "transport/bus_population_map.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <stdexcept>
 #include <thread>
@@ -15,8 +16,13 @@ namespace transport {
 namespace {
 
 bool WaitProgress(SpscBus& in, BusMsgType& type, std::vector<std::uint8_t>& payload,
-                  std::chrono::steady_clock::time_point deadline, BusRecvResult& result) {
+                  std::chrono::steady_clock::time_point deadline, BusRecvResult& result,
+                  std::atomic<bool>* shutdown) {
     while (std::chrono::steady_clock::now() < deadline) {
+        if (shutdown != nullptr && shutdown->load(std::memory_order_relaxed)) {
+            result = BusRecvResult::Empty;
+            return false;
+        }
         result = in.TryRecv(type, payload);
         if (result != BusRecvResult::Empty) {
             return true;
@@ -197,10 +203,16 @@ FinishSessionStatus PopulationSession::Run() {
     }
 
     for (;;) {
+        if (cfg_.shutdown != nullptr && cfg_.shutdown->load(std::memory_order_relaxed)) {
+            return FinishFatal(ErrorCode::Internal, "venue shutdown", false);
+        }
         BusMsgType type{};
         std::vector<std::uint8_t> payload;
         BusRecvResult got = BusRecvResult::Empty;
-        if (!WaitProgress(in_, type, payload, StallDeadline(), got)) {
+        if (!WaitProgress(in_, type, payload, StallDeadline(), got, cfg_.shutdown)) {
+            if (cfg_.shutdown != nullptr && cfg_.shutdown->load(std::memory_order_relaxed)) {
+                return FinishFatal(ErrorCode::Internal, "venue shutdown", false);
+            }
             return FinishFatal(ErrorCode::DrainTimeout, "no progress before drain_timeout", false);
         }
         if (got == BusRecvResult::ProtocolError) {

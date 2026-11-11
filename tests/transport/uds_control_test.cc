@@ -40,7 +40,7 @@ TEST(UdsControl, CreateQueuesRegistersRings) {
     transport::CreateAck client_ack;
 
     std::thread server([&] {
-        const int raw = listener.Accept();
+        const int raw = listener.AcceptTimeout(5000);
         if (raw < 0) {
             return;
         }
@@ -75,6 +75,20 @@ TEST(UdsControl, CreateQueuesRegistersRings) {
     EXPECT_EQ(got.bytes[0], 7);
 }
 
+TEST(UdsControl, AcceptTimeoutWhenNoClient) {
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    ASSERT_TRUE(listener.valid());
+
+    const auto t0 = std::chrono::steady_clock::now();
+    const int raw = listener.AcceptTimeout(50);
+    const auto elapsed = std::chrono::steady_clock::now() - t0;
+
+    EXPECT_EQ(raw, -2);
+    EXPECT_GE(elapsed, std::chrono::milliseconds(40));
+    EXPECT_LT(elapsed, std::chrono::milliseconds(500));
+}
+
 TEST(UdsControl, EmptyPopulationIdRejected) {
     const std::string path = TempSockPath();
     auto listener = UdsListener::Bind(path);
@@ -82,7 +96,7 @@ TEST(UdsControl, EmptyPopulationIdRejected) {
 
     transport::CreateAck client_ack;
     std::thread server([&] {
-        const int raw = listener.Accept();
+        const int raw = listener.AcceptTimeout(5000);
         if (raw < 0) {
             return;
         }

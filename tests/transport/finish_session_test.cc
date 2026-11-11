@@ -50,7 +50,7 @@ TEST(FinishSession, CloseThenDestroy) {
     SessionEnded seen;
 
     std::thread server([&] {
-        const int raw = listener.Accept();
+        const int raw = listener.AcceptTimeout(5000);
         if (raw < 0) {
             return;
         }
@@ -96,7 +96,7 @@ TEST(FinishSession, TimeoutStillDestroys) {
     FinishSessionStatus status = FinishSessionStatus::Failed;
 
     std::thread server([&] {
-        const int raw = listener.Accept();
+        const int raw = listener.AcceptTimeout(5000);
         if (raw < 0) {
             return;
         }
@@ -144,7 +144,7 @@ TEST(FinishSession, CoalescedCreateAckAndSessionEnded) {
     SessionEnded seen;
 
     std::thread server([&] {
-        const int raw = listener.Accept();
+        const int raw = listener.AcceptTimeout(5000);
         if (raw < 0) {
             return;
         }
@@ -192,7 +192,7 @@ TEST(FinishSession, AlreadySeenCloseSkipsWait) {
     SessionEnded seen;
 
     std::thread server([&] {
-        const int raw = listener.Accept();
+        const int raw = listener.AcceptTimeout(5000);
         if (raw < 0) {
             return;
         }

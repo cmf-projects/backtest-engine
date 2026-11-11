@@ -117,7 +117,7 @@ CMF binary не ломаем. Population lib линкуем в новый app.
 
 | # | Задача | Done when |
 | --- | --- | --- |
-| 5.1 | Graceful shutdown по **Ctrl+C** (`SIGINT` / при необходимости `SIGTERM`): перестать Accept/Create, дождаться drain текущих `PopulationSession` (или их `Finish*` с понятным reason), затем teardown listener/UDS | сигнал → нет новых Create; живые попы корректно SessionEnded; процесс выходит 0 (или явный код) без abort |
+| 5.1 | Graceful shutdown по **Ctrl+C** (`SIGINT` / при необходимости `SIGTERM`): перестать Accept/Create, дождаться drain текущих `PopulationSession` (или их `Finish*` с понятным reason), затем teardown listener/UDS | ✅ SIGINT/SIGTERM → stop accept/create; sessions `FinishFatal("venue shutdown")`; exit 0 |
 | 5.2 | Логер: **уровни** (debug/info/warn/error), два формата вывода — **plain** (человекочитаемый) и **JSON** (одна строка / event); конфиг формата и level из toml/env | venue/session пишут через логер, не через сырой `fprintf`; переключение plain↔json без перекомпиляции |
 | 5.3 | Не писать логер с нуля, если можно взять готовое: **в этом репо логера нет**; кандидаты снаружи — `spdlog` (levels + sinks; JSON через pattern/custom sink) или тонкая обёртка над ним. Выбрать одно, зафиксировать в CMake/FetchContent | зависимость подключена; короткий usage в README |
 

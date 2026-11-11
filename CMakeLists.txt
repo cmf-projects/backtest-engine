@@ -84,6 +84,7 @@ target_link_libraries(transport_lib PUBLIC cmf::population cmf::dataset Threads:
 # ---------------------------------------------------------------------------
 add_library(population_venue_lib
   src/population_venue/config/config.cc
+  src/population_venue/shutdown/shutdown.cc
   src/population_venue/app/app.cc)
 add_library(cmf::population_venue ALIAS population_venue_lib)
 target_include_directories(population_venue_lib

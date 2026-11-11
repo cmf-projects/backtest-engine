@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <string>
@@ -142,7 +143,7 @@ TEST(PopulationSession, OpenTickAdvanceEndWithPopulation) {
     };
 
     std::thread server([&] {
-        const int raw = listener.Accept();
+        const int raw = listener.AcceptTimeout(5000);
         if (raw < 0) {
             return;
         }
@@ -242,7 +243,7 @@ TEST(PopulationSession, SubmitOrderThenAdvance) {
     };
 
     std::thread server([&] {
-        const int raw = listener.Accept();
+        const int raw = listener.AcceptTimeout(5000);
         if (raw < 0) {
             return;
         }
@@ -345,7 +346,7 @@ TEST(PopulationSession, ClientCloseAfterTick) {
     };
 
     std::thread server([&] {
-        const int raw = listener.Accept();
+        const int raw = listener.AcceptTimeout(5000);
         if (raw < 0) {
             return;
         }
@@ -399,6 +400,80 @@ TEST(PopulationSession, ClientCloseAfterTick) {
     EXPECT_EQ(registry.size(), 0u);
 }
 
+TEST(PopulationSession, ShutdownFlagFinishesSession) {
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
+
+    FinishSessionStatus status = FinishSessionStatus::Failed;
+    SessionEnded ended;
+    std::atomic<bool> shutdown{false};
+
+    auto events = std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(2, 200, {{100.0, 8}}, {{101.0, 5}}),
+    };
+
+    std::thread server([&] {
+        const int raw = listener.AcceptTimeout(5000);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
+            return;
+        }
+        SessionConfig cfg = MakeCfg("pop-stop", std::move(events));
+        cfg.shutdown = &shutdown;
+        PopulationSession session(conn, registry, std::move(cfg));
+        status = session.Run();
+    });
+
+    std::thread client([&] {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        const auto ack = RequestCreateQueues(conn, CreateQueues{.population_id = "pop-stop"});
+        if (ack.status != AckStatus::Ok) {
+            return;
+        }
+
+        SpscBus out(registry.FindOut(ack.out_queue));
+        SpscBus in(registry.FindIn(ack.in_queue));
+
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(MakeTestOpen("pop-stop", 1)))) {
+            return;
+        }
+
+        BusMsgType type{};
+        std::vector<std::uint8_t> payload;
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::OpenAck) {
+            return;
+        }
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::Tick) {
+            return;
+        }
+
+        // Venue stop while awaiting Order/Advance — should FinishFatal quickly.
+        shutdown.store(true);
+        if (!WaitSessionEnded(conn, ended)) {
+            return;
+        }
+        (void)in.TrySend(BusMsgType::Close, EncodeBusClose());
+    });
+
+    server.join();
+    client.join();
+
+    EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
+    EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+    EXPECT_EQ(ended.reason_code, ErrorCode::Internal);
+    EXPECT_EQ(ended.message, "venue shutdown");
+    EXPECT_EQ(registry.size(), 0u);
+}
+
 TEST(PopulationSession, UnexpectedMessageIsFatal) {
     // Advance before Open → Allowed() rejects → Error + SessionEnded{fatal}.
     const std::string path = TempSockPath();
@@ -409,7 +484,7 @@ TEST(PopulationSession, UnexpectedMessageIsFatal) {
     SessionEnded ended;
 
     std::thread server([&] {
-        const int raw = listener.Accept();
+        const int raw = listener.AcceptTimeout(5000);
         if (raw < 0) {
             return;
         }
@@ -472,7 +547,7 @@ TEST(PopulationSession, BadOpenZeroDeltaIsFatal) {
     BusOpenAck open_ack;
 
     std::thread server([&] {
-        const int raw = listener.Accept();
+        const int raw = listener.AcceptTimeout(5000);
         if (raw < 0) {
             return;
         }
@@ -544,7 +619,7 @@ TEST(PopulationSession, BadOpenWrongPopulationIdIsFatal) {
     BusOpenAck open_ack;
 
     std::thread server([&] {
-        const int raw = listener.Accept();
+        const int raw = listener.AcceptTimeout(5000);
         if (raw < 0) {
             return;
         }
@@ -610,7 +685,7 @@ TEST(PopulationSession, ProtocolOpenAfterTickIsFatal) {
     };
 
     std::thread server([&] {
-        const int raw = listener.Accept();
+        const int raw = listener.AcceptTimeout(5000);
         if (raw < 0) {
             return;
         }
@@ -685,7 +760,7 @@ TEST(PopulationSession, BadOrderBatchUnknownSlotIsFatal) {
     };
 
     std::thread server([&] {
-        const int raw = listener.Accept();
+        const int raw = listener.AcceptTimeout(5000);
         if (raw < 0) {
             return;
         }
@@ -780,7 +855,7 @@ TEST(PopulationSession, TruncatedOrderBatchIsFatal) {
     };
 
     std::thread server([&] {
-        const int raw = listener.Accept();
+        const int raw = listener.AcceptTimeout(5000);
         if (raw < 0) {
             return;
         }

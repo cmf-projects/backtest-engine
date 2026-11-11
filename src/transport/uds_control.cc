@@ -4,6 +4,7 @@
 #include "transport/bus_messages.hpp"
 #include "transport/spsc_bus.hpp"
 
+#include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -114,14 +115,40 @@ UdsListener UdsListener::Bind(std::string path) {
         ::unlink(path.c_str());
         throw std::runtime_error("uds: listen() failed");
     }
+    const int flags = ::fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) {
+        CloseFd(fd);
+        ::unlink(path.c_str());
+        throw std::runtime_error("uds: O_NONBLOCK failed");
+    }
     return UdsListener(fd, std::move(path));
 }
 
-int UdsListener::Accept() const {
+int UdsListener::AcceptTimeout(int timeout_ms) const {
     if (fd_ < 0) {
         return -1;
     }
-    return ::accept(fd_, nullptr, nullptr);
+    pollfd pfd{};
+    pfd.fd = fd_;
+    pfd.events = POLLIN;
+    const int pr = ::poll(&pfd, 1, timeout_ms);
+    if (pr == 0) {
+        return -2;
+    }
+    if (pr < 0) {
+        if (errno == EINTR) {
+            return -2;
+        }
+        return -1;
+    }
+    const int client = ::accept(fd_, nullptr, nullptr);
+    if (client < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+            return -2;  // race: POLLIN then nothing left to accept
+        }
+        return -1;
+    }
+    return client;
 }
 
 int UdsConnect(const std::string& path) {

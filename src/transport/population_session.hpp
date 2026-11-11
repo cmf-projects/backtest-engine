@@ -11,6 +11,7 @@
 #include "transport/spsc_bus.hpp"
 #include "transport/uds_control.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -36,6 +37,8 @@ struct SessionConfig {
     // Builds a Tape for each Open.components[] row (1…3).
     // Default (empty): dataset::MakeJsonlTape(path, sec_code).
     std::function<population::TapePtr(const BusComponent&)> make_tape;
+    // Optional process stop flag (Ctrl+C). When set, Run() FinishFatal("venue shutdown").
+    std::atomic<bool>* shutdown = nullptr;
 };
 
 class PopulationSession {

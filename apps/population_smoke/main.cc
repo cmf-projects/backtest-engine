@@ -109,7 +109,7 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "smoke: uds=%s dataset=%s\n", uds_path.c_str(), dataset.c_str());
 
     std::thread server([&] {
-        const int raw = listener.Accept();
+        const int raw = listener.AcceptTimeout(5000);
         if (raw < 0) {
             return;
         }

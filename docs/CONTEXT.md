@@ -42,7 +42,7 @@ Pull model: venue advances `pop_ts` only on Engine **Advance**.
 apps/population_venue/      main → LoadConfig + App::Run
 apps/population_smoke/      in-process Open→Tick→Advance→End
 options/                    TOML per entrypoint (e.g. population_venue.toml)
-src/population_venue/       config/ + app/ (listen, spawn sessions)
+src/population_venue/       config/ + app/ + shutdown/ (listen, spawn sessions, Ctrl+C)
 src/transport/              UDS, QueueRegistry, SPSC bus, PopulationSession
 src/population/             core (1…3 components via MergedTape)
 src/dataset/                JSONL → Tape
@@ -75,4 +75,4 @@ make population-smoke
 make population          # listen; default UDS /tmp/cmf-population.sock
 ```
 
-Next coding milestone: see IMPL (**веха 4** полировка; bundle 3.x done). Ops last: graceful Ctrl+C + plain/JSON logger (веха 5).
+Next coding milestone: see IMPL (**веха 4** полировка; **5.1** graceful Ctrl+C done). Ops left: логер plain/JSON (5.2–5.3).

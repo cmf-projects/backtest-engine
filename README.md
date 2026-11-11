@@ -24,6 +24,9 @@ make population         # listen on UDS (default /tmp/cmf-population.sock)
 Knobs: `POPULATION_UDS`, `POPULATION_DRAIN_MS`, `CONFIG=options/population_venue.toml`.  
 Open still carries `dataset_path` (JSONL on the venue host). SPSC queues are **in-process** for now (shm later).
 
+**Shutdown:** `SIGINT` / `SIGTERM` (Ctrl+C) stops Accept/Create, finishes live populations with
+`SessionEnded{fatal, "venue shutdown"}`, joins session threads, unlinks the UDS, exits 0.
+
 ## Configure
 
 TOML configs for entrypoints live under `options/`:

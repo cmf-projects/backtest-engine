@@ -32,7 +32,9 @@ public:
   [[nodiscard]] const std::string &path() const noexcept { return path_; }
   [[nodiscard]] int fd() const noexcept { return fd_; }
 
-  [[nodiscard]] int Accept() const;
+  // poll+accept on O_NONBLOCK listen fd.
+  // Returns accepted fd, -1 on error, -2 on timeout / EAGAIN / EINTR.
+  [[nodiscard]] int AcceptTimeout(int timeout_ms) const;
 
 private:
   explicit UdsListener(int fd, std::string path);
