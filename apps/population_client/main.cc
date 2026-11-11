@@ -73,6 +73,39 @@ struct PendingOrder {
     std::string price;
 };
 
+// Monotonic client_order_id → slot; no per-insert heap nodes.
+struct DensePending {
+    struct Slot {
+        bool live = false;
+        PendingOrder order;
+    };
+
+    std::vector<Slot> slots;  // index == oid (0 unused)
+
+    void Reserve(std::size_t n) { slots.reserve(n); }
+
+    void Put(std::uint64_t oid, PendingOrder order) {
+        if (oid >= slots.size()) {
+            slots.resize(oid + 1);
+        }
+        slots[oid].order = std::move(order);
+        slots[oid].live = true;
+    }
+
+    [[nodiscard]] PendingOrder* Find(std::uint64_t oid) {
+        if (oid >= slots.size() || !slots[oid].live) {
+            return nullptr;
+        }
+        return &slots[oid].order;
+    }
+
+    void Erase(std::uint64_t oid) {
+        if (oid < slots.size()) {
+            slots[oid].live = false;
+        }
+    }
+};
+
 struct RunStats {
     int ticks = 0;
     int orders_sent = 0;
@@ -203,13 +236,13 @@ void CollectBooks(const BusTick& tick, std::vector<const BusBookUpdate*>& out) {
     }
 }
 
-BusOrderBatch MakeTakeBatch(const BusTick& tick, std::uint64_t& next_oid,
-                            std::unordered_map<std::uint64_t, PendingOrder>& pending) {
-    BusOrderBatch batch;
-    std::vector<const BusBookUpdate*> books;
+void MakeTakeBatch(const BusTick& tick, std::uint64_t& next_oid, DensePending& pending,
+                   BusOrderBatch& batch, std::vector<const BusBookUpdate*>& books) {
+    batch.orders.clear();
+    batch.cancels.clear();
     CollectBooks(tick, books);
     if (books.empty()) {
-        return batch;
+        return;
     }
     const std::uint32_t slot_id = tick.slots.empty() ? 1u : tick.slots[0].slot_id;
 
@@ -224,12 +257,12 @@ BusOrderBatch MakeTakeBatch(const BusTick& tick, std::uint64_t& next_oid,
             .qty = 1,
             .tif = BusTimeInForce::Ioc,
         });
-        pending[oid] = PendingOrder{
-            .submit_pop_ts_ns = tick.pop_ts_ns,
-            .component_id = book.component_id,
-            .side = side,
-            .price = px,
-        };
+        pending.Put(oid, PendingOrder{
+                             .submit_pop_ts_ns = tick.pop_ts_ns,
+                             .component_id = book.component_id,
+                             .side = side,
+                             .price = px,
+                         });
     };
 
     auto price_ok = [](const std::string& px) {
@@ -249,30 +282,27 @@ BusOrderBatch MakeTakeBatch(const BusTick& tick, std::uint64_t& next_oid,
             push(BusSide::Sell, *book, book->bids[0].price);
         }
     }
-    return batch;
 }
 
-void NoteTrades(const BusTick& tick, std::unordered_map<std::uint64_t, PendingOrder>& pending,
-                RunStats& stats) {
+void NoteTrades(const BusTick& tick, DensePending& pending, RunStats& stats) {
     for (const auto& slot : tick.slots) {
         for (const auto& tr : slot.trades) {
             if (tr.exec_type == BusExecType::Cancel) {
                 ++stats.cancels;
-                pending.erase(tr.client_order_id);
+                pending.Erase(tr.client_order_id);
                 continue;
             }
             if (tr.exec_type != BusExecType::Fill && tr.exec_type != BusExecType::Unspecified) {
                 continue;
             }
             ++stats.fills;
-            const auto it = pending.find(tr.client_order_id);
-            if (it == pending.end()) {
+            PendingOrder* po = pending.Find(tr.client_order_id);
+            if (po == nullptr) {
                 continue;
             }
-            const std::uint64_t delay =
-                tick.pop_ts_ns >= it->second.submit_pop_ts_ns
-                    ? tick.pop_ts_ns - it->second.submit_pop_ts_ns
-                    : 0;
+            const std::uint64_t delay = tick.pop_ts_ns >= po->submit_pop_ts_ns
+                                            ? tick.pop_ts_ns - po->submit_pop_ts_ns
+                                            : 0;
             stats.sum_fill_delay_ns += delay;
             if (delay > stats.max_fill_delay_ns) {
                 stats.max_fill_delay_ns = delay;
@@ -281,7 +311,7 @@ void NoteTrades(const BusTick& tick, std::unordered_map<std::uint64_t, PendingOr
                 stats.min_fill_delay_ns = delay;
             }
             if (tr.leaves == 0) {
-                pending.erase(it);
+                pending.Erase(tr.client_order_id);
             }
         }
     }
@@ -328,7 +358,14 @@ struct PopHandle {
     }
 
     std::uint64_t next_oid = 1;
-    std::unordered_map<std::uint64_t, PendingOrder> pending;
+    DensePending pending;
+    pending.Reserve(32'768);
+    BusTick tick;
+    BusOrderBatch batch;
+    batch.orders.reserve(8);
+    std::vector<const BusBookUpdate*> books;
+    books.reserve(4);
+    BusOrdersAck orders_ack;
 
     for (;;) {
         if (!RecvMessage(out, type, payload)) {
@@ -351,7 +388,6 @@ struct PopHandle {
             return false;
         }
 
-        BusTick tick;
         if (!DecodeBusTick(payload.data(), payload.size(), tick)) {
             pop.error = "bad Tick";
             return false;
@@ -359,7 +395,7 @@ struct PopHandle {
         ++pop.stats.ticks;
         NoteTrades(tick, pending, pop.stats);
 
-        BusOrderBatch batch = MakeTakeBatch(tick, next_oid, pending);
+        MakeTakeBatch(tick, next_oid, pending, batch, books);
         if (!batch.orders.empty()) {
             pop.stats.orders_sent += static_cast<int>(batch.orders.size());
             EncodeBusOrderBatchInto(batch, encode_buf);
@@ -371,7 +407,6 @@ struct PopHandle {
                 pop.error = "expected OrdersAck";
                 return false;
             }
-            BusOrdersAck orders_ack;
             if (!DecodeBusOrdersAck(payload.data(), payload.size(), orders_ack) ||
                 orders_ack.status != AckStatus::Ok) {
                 pop.error = "OrdersAck reject: " + orders_ack.message;

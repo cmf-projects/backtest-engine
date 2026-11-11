@@ -116,10 +116,18 @@ struct BusSlotTick {
     std::vector<BusTrade> trades;
 };
 
+// Decode-only spares: keep nested vector capacity when book/slot counts shrink.
+struct BusDecodeScratch {
+    std::vector<BusBookUpdate> books;
+    std::vector<BusSlotTick> slots;
+    std::vector<BusTrade> trades;
+};
+
 struct BusTick {
     std::uint64_t pop_ts_ns = 0;
     std::vector<BusBookUpdate> books;  // shared seed (often empty with per-slot md_lag)
     std::vector<BusSlotTick> slots;
+    BusDecodeScratch decode_scratch;  // not on wire; reused across DecodeBusTick calls
 };
 
 struct BusOrder {

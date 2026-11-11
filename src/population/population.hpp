@@ -1,5 +1,6 @@
 #pragma once
 
+#include "population/book_diff.hpp"
 #include "population/clock.hpp"
 #include "population/impact.hpp"
 #include "population/merged_tape.hpp"
@@ -59,8 +60,9 @@ public:
     void Start();
 
     // TZ §5.4: recover impact → match due vs effective copy → md_lag patches +
-    // trades. Shared tick.books unused.
-    [[nodiscard]] TickView MakeTick();
+    // trades. Shared tick.books unused. Reuses internal scratch; valid until next
+    // MakeTick/Advance/Submit.
+    [[nodiscard]] const TickView& MakeTick();
 
     // Validate + accept into working (effective_ts = pop_ts + Δ). No match.
     // Wire: no failures → OrdersAck ok; else OrdersAck.errors[] (no partial applies).
@@ -129,10 +131,10 @@ private:
     [[nodiscard]] bool HasComponent(const std::string& component_id) const;
     [[nodiscard]] Component* MutableComponent(const std::string& component_id);
     [[nodiscard]] const SlotConfig* FindSlot(std::uint32_t slot_id) const;
-    [[nodiscard]] SnapshotEvent ViewSnap(const SlotConfig& cfg,
-                                         const Component& component) const;
-    [[nodiscard]] SnapshotEvent EffectiveView(const SlotConfig& cfg,
-                                              const Component& component) const;
+    [[nodiscard]] const SnapshotEvent& ViewSnap(const SlotConfig& cfg,
+                                                const Component& component) const;
+    void EffectiveViewInto(const SlotConfig& cfg, const Component& component,
+                           SnapshotEvent& out) const;
     void ApplyMergedStep(const MergedStep& step);
     void TrimWindowForLags();
     void MatchDueIfNeeded();
@@ -155,6 +157,14 @@ private:
     std::unordered_map<std::uint32_t, std::vector<Trade>> pending_trades_;
     std::uint64_t last_match_pop_ts_ns_ = 0;
     bool matched_this_pop_ = false;
+
+    // Hot-path scratch (reused across MakeTick / match).
+    TickView tick_scratch_;
+    SnapshotEvent view_scratch_;
+    BookDiffResult diff_scratch_;
+    std::vector<Level> match_bids_scratch_;
+    std::vector<Level> match_asks_scratch_;
+    std::vector<Trade> match_trades_scratch_;
 };
 
 }  // namespace population

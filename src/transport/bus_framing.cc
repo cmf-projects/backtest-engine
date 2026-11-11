@@ -5,6 +5,22 @@
 namespace transport {
 namespace {
 
+template <typename T>
+void ResizeWithPool(std::vector<T>& v, std::uint32_t n, std::vector<T>& pool) {
+    while (v.size() > n) {
+        pool.push_back(std::move(v.back()));
+        v.pop_back();
+    }
+    while (v.size() < n) {
+        if (!pool.empty()) {
+            v.push_back(std::move(pool.back()));
+            pool.pop_back();
+        } else {
+            v.emplace_back();
+        }
+    }
+}
+
 void AppendLevels(std::vector<std::uint8_t>& out, const std::vector<BusBookLevel>& levels) {
     AppendU32(out, static_cast<std::uint32_t>(levels.size()));
     for (const auto& lvl : levels) {
@@ -19,14 +35,21 @@ void AppendLevels(std::vector<std::uint8_t>& out, const std::vector<BusBookLevel
     if (!ReadU32(p, end, n)) {
         return false;
     }
-    levels.clear();
-    levels.reserve(n);
+    // TZ: max 64 levels/side — pre-reserve so depth changes don't realloc.
+    constexpr std::uint32_t kMaxLevels = 64;
+    if (n > kMaxLevels) {
+        return false;
+    }
+    if (levels.capacity() < kMaxLevels) {
+        levels.reserve(kMaxLevels);
+    }
+    if (levels.size() != n) {
+        levels.resize(n);
+    }
     for (std::uint32_t i = 0; i < n; ++i) {
-        BusBookLevel lvl;
-        if (!ReadString(p, end, lvl.price) || !ReadU64(p, end, lvl.qty)) {
+        if (!ReadString(p, end, levels[i].price) || !ReadU64(p, end, levels[i].qty)) {
             return false;
         }
-        levels.push_back(std::move(lvl));
     }
     return true;
 }
@@ -77,32 +100,27 @@ void AppendSlotTick(std::vector<std::uint8_t>& out, const BusSlotTick& slot) {
     }
 }
 
-[[nodiscard]] bool ReadSlotTick(const std::uint8_t*& p, const std::uint8_t* end, BusSlotTick& slot) {
+[[nodiscard]] bool ReadSlotTick(const std::uint8_t*& p, const std::uint8_t* end, BusSlotTick& slot,
+                                BusDecodeScratch& scratch) {
     std::uint32_t n_books = 0;
     std::uint32_t n_trades = 0;
     if (!ReadU32(p, end, slot.slot_id) || !ReadU32(p, end, n_books)) {
         return false;
     }
-    slot.books.clear();
-    slot.books.reserve(n_books);
+    ResizeWithPool(slot.books, n_books, scratch.books);
     for (std::uint32_t i = 0; i < n_books; ++i) {
-        BusBookUpdate book;
-        if (!ReadBookUpdate(p, end, book)) {
+        if (!ReadBookUpdate(p, end, slot.books[i])) {
             return false;
         }
-        slot.books.push_back(std::move(book));
     }
     if (!ReadU32(p, end, n_trades)) {
         return false;
     }
-    slot.trades.clear();
-    slot.trades.reserve(n_trades);
+    ResizeWithPool(slot.trades, n_trades, scratch.trades);
     for (std::uint32_t i = 0; i < n_trades; ++i) {
-        BusTrade trade;
-        if (!ReadTrade(p, end, trade)) {
+        if (!ReadTrade(p, end, slot.trades[i])) {
             return false;
         }
-        slot.trades.push_back(std::move(trade));
     }
     return true;
 }
@@ -238,36 +256,27 @@ std::vector<std::uint8_t> EncodeBusTick(const BusTick& msg) {
 bool DecodeBusTick(const std::uint8_t* data, std::size_t size, BusTick& out) {
     const std::uint8_t* p = data;
     const std::uint8_t* end = data + size;
-    BusTick tmp;
     std::uint32_t n_books = 0;
     std::uint32_t n_slots = 0;
-    if (!ReadU64(p, end, tmp.pop_ts_ns) || !ReadU32(p, end, n_books)) {
+    if (!ReadU64(p, end, out.pop_ts_ns) || !ReadU32(p, end, n_books)) {
         return false;
     }
-    tmp.books.reserve(n_books);
+    ResizeWithPool(out.books, n_books, out.decode_scratch.books);
     for (std::uint32_t i = 0; i < n_books; ++i) {
-        BusBookUpdate book;
-        if (!ReadBookUpdate(p, end, book)) {
+        if (!ReadBookUpdate(p, end, out.books[i])) {
             return false;
         }
-        tmp.books.push_back(std::move(book));
     }
     if (!ReadU32(p, end, n_slots)) {
         return false;
     }
-    tmp.slots.reserve(n_slots);
+    ResizeWithPool(out.slots, n_slots, out.decode_scratch.slots);
     for (std::uint32_t i = 0; i < n_slots; ++i) {
-        BusSlotTick slot;
-        if (!ReadSlotTick(p, end, slot)) {
+        if (!ReadSlotTick(p, end, out.slots[i], out.decode_scratch)) {
             return false;
         }
-        tmp.slots.push_back(std::move(slot));
     }
-    if (p != end) {
-        return false;
-    }
-    out = std::move(tmp);
-    return true;
+    return p == end;
 }
 
 void EncodeBusOrderBatchInto(const BusOrderBatch& msg, std::vector<std::uint8_t>& out) {

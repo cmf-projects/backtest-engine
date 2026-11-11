@@ -27,6 +27,8 @@ private:
     std::string path_;
     std::string only_symbol_;
     std::ifstream file_;
+    std::string line_;                              // reused by getline
+    population::SnapshotEvent parse_event_;         // reused parse scratch
     std::optional<population::SnapshotEvent> pending_;
 };
 

@@ -39,8 +39,8 @@ TEST(TapeWindow, AtOrBeforeAndTrim) {
     EXPECT_EQ(w.head_ts_ns(), 300u);
     EXPECT_EQ(w.size(), 3u);
 
-    EXPECT_FALSE(w.AtOrBefore(50).has_value());
-    ASSERT_TRUE(w.AtOrBefore(100).has_value());
+    EXPECT_EQ(w.AtOrBefore(50), nullptr);
+    ASSERT_NE(w.AtOrBefore(100), nullptr);
     EXPECT_EQ(w.AtOrBefore(100)->bids[0].qty, 10u);
     EXPECT_EQ(w.AtOrBefore(250)->bids[0].qty, 8u);
     EXPECT_EQ(w.AtOrBefore(300)->bids[0].qty, 6u);
@@ -49,7 +49,7 @@ TEST(TapeWindow, AtOrBeforeAndTrim) {
     w.TrimBefore(200);
     EXPECT_EQ(w.floor_ts_ns(), 200u);
     EXPECT_EQ(w.size(), 2u);
-    EXPECT_FALSE(w.AtOrBefore(100).has_value());
+    EXPECT_EQ(w.AtOrBefore(100), nullptr);
     EXPECT_EQ(w.AtOrBefore(200)->bids[0].qty, 8u);
 }
 

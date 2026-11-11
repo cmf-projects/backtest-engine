@@ -188,32 +188,38 @@ void Population::Start() {
     started_ = true;
 }
 
-SnapshotEvent Population::ViewSnap(const SlotConfig& cfg, const Component& component) const {
+const SnapshotEvent& Population::ViewSnap(const SlotConfig& cfg,
+                                          const Component& component) const {
     const std::uint64_t pop = clock_.pop_ts_ns();
     const std::uint64_t view_ts =
         (cfg.md_lag_ns >= pop) ? 0 : (pop - cfg.md_lag_ns);
 
-    if (auto snap = component.window().AtOrBefore(view_ts)) {
+    if (const SnapshotEvent* snap = component.window().AtOrBefore(view_ts)) {
         return *snap;
     }
     // Warm-up: lag reaches before SnapshotFloor → clamp to oldest kept snap.
     if (component.window().empty()) {
         throw std::logic_error("population: ViewSnap on empty TapeWindow");
     }
-    auto floor = component.window().AtOrBefore(component.window().floor_ts_ns());
-    if (!floor) {
+    const SnapshotEvent* floor =
+        component.window().AtOrBefore(component.window().floor_ts_ns());
+    if (floor == nullptr) {
         throw std::logic_error("population: TapeWindow floor missing");
     }
     return *floor;
 }
 
-SnapshotEvent Population::EffectiveView(const SlotConfig& cfg,
-                                        const Component& component) const {
+void Population::EffectiveViewInto(const SlotConfig& cfg, const Component& component,
+                                   SnapshotEvent& out) const {
     // TZ §8.4 P0: old file snap @ view_ts, minus *current* eaten (not historical).
-    SnapshotEvent view = ViewSnap(cfg, component);
+    const SnapshotEvent& src = ViewSnap(cfg, component);
+    out.seq = src.seq;
+    out.ts_ns = src.ts_ns;
+    out.symbol = src.symbol;
+    out.bids = src.bids;  // assign reuses capacity when possible
+    out.asks = src.asks;
     slot_impact_.at(SlotComponentKey{cfg.slot_id, component.component_id()})
-        .ApplyTo(view.bids, view.asks, component.tick_size());
-    return view;
+        .ApplyTo(out.bids, out.asks, component.tick_size());
 }
 
 void Population::TrimWindowForLags() {
@@ -234,7 +240,7 @@ void Population::TrimWindowForLags() {
         if (component.window_.empty()) {
             continue;
         }
-        if (auto cover = component.window_.AtOrBefore(cover_ts)) {
+        if (const SnapshotEvent* cover = component.window_.AtOrBefore(cover_ts)) {
             component.window_.TrimBefore(cover->ts_ns);
         }
     }
@@ -247,47 +253,64 @@ void Population::MatchDueIfNeeded() {
     }
 
     for (const SlotConfig& cfg : slots_) {
-        std::vector<Trade> all_trades;
+        match_trades_scratch_.clear();
         for (const Component& component : components_) {
             if (!component.present()) {
                 continue;
             }
-            std::vector<Level> bids = component.current().bids;
-            std::vector<Level> asks = component.current().asks;
+            match_bids_scratch_ = component.current().bids;
+            match_asks_scratch_ = component.current().asks;
             ImpactState& impact =
                 slot_impact_.at(SlotComponentKey{cfg.slot_id, component.component_id()});
             impact.Recover(component.current().bids, component.current().asks, pop,
                            component.tick_size());
-            impact.ApplyTo(bids, asks, component.tick_size());
+            impact.ApplyTo(match_bids_scratch_, match_asks_scratch_, component.tick_size());
             auto trades =
                 slot_orders_.at(cfg.slot_id)
-                    .MatchDue(pop, std::move(bids), std::move(asks), component.tick_size(),
-                              &impact, component.component_id());
-            all_trades.insert(all_trades.end(), std::make_move_iterator(trades.begin()),
-                              std::make_move_iterator(trades.end()));
+                    .MatchDue(pop, std::move(match_bids_scratch_), std::move(match_asks_scratch_),
+                              component.tick_size(), &impact, component.component_id());
+            // Restore scratch capacity after move-into MatchDue.
+            if (match_bids_scratch_.capacity() < kMaxLevelsPerSide) {
+                match_bids_scratch_.reserve(kMaxLevelsPerSide);
+            }
+            if (match_asks_scratch_.capacity() < kMaxLevelsPerSide) {
+                match_asks_scratch_.reserve(kMaxLevelsPerSide);
+            }
+            match_trades_scratch_.insert(match_trades_scratch_.end(),
+                                         std::make_move_iterator(trades.begin()),
+                                         std::make_move_iterator(trades.end()));
         }
-        pending_trades_[cfg.slot_id] = std::move(all_trades);
+        pending_trades_[cfg.slot_id] = std::move(match_trades_scratch_);
+        match_trades_scratch_.clear();
+        if (match_trades_scratch_.capacity() < 16) {
+            match_trades_scratch_.reserve(16);
+        }
     }
 
     last_match_pop_ts_ns_ = pop;
     matched_this_pop_ = true;
 }
 
-TickView Population::MakeTick() {
+const TickView& Population::MakeTick() {
     if (!started_) {
         throw std::logic_error("population: MakeTick before Start");
     }
 
     MatchDueIfNeeded();
 
-    TickView tick;
-    tick.pop_ts_ns = clock_.pop_ts_ns();
-    tick.slots.reserve(slots_.size());
+    tick_scratch_.pop_ts_ns = clock_.pop_ts_ns();
+    tick_scratch_.books.clear();
+    tick_scratch_.slots.clear();
+    if (tick_scratch_.slots.capacity() < slots_.size()) {
+        tick_scratch_.slots.reserve(slots_.size());
+    }
     // Shared tick.books unused when md_lag may differ per slot.
 
     for (const SlotConfig& cfg : slots_) {
-        SlotTickView slot_tick;
+        tick_scratch_.slots.push_back(SlotTickView{});
+        SlotTickView& slot_tick = tick_scratch_.slots.back();
         slot_tick.slot_id = cfg.slot_id;
+        slot_tick.books.clear();
         slot_tick.trades = std::move(pending_trades_[cfg.slot_id]);
         pending_trades_[cfg.slot_id].clear();
 
@@ -296,40 +319,38 @@ TickView Population::MakeTick() {
             if (!component.present()) {
                 continue;
             }
-            const SnapshotEvent view = EffectiveView(cfg, component);
+            EffectiveViewInto(cfg, component, view_scratch_);
             ComponentSend& send = sent.components[component.component_id()];
 
             if (!send.has_sent) {
-                SlotBookUpdateView patch;
+                slot_tick.books.push_back(SlotBookUpdateView{});
+                SlotBookUpdateView& patch = slot_tick.books.back();
                 patch.component_id = component.component_id();
                 patch.kind = BookPatchKind::Keyframe;
-                patch.bids = view.bids;
-                patch.asks = view.asks;
-                slot_tick.books.push_back(std::move(patch));
-                send.last_bids = view.bids;
-                send.last_asks = view.asks;
+                patch.bids = view_scratch_.bids;
+                patch.asks = view_scratch_.asks;
+                send.last_bids = view_scratch_.bids;
+                send.last_asks = view_scratch_.asks;
                 send.has_sent = true;
-            } else if (const BookDiffResult diff =
-                           DiffBooks(send.last_bids, send.last_asks, view.bids, view.asks,
-                                     component.tick_size());
-                       !diff.empty()) {
-                SlotBookUpdateView patch;
-                patch.component_id = component.component_id();
-                patch.kind = BookPatchKind::Diff;
-                patch.bids = diff.bids;
-                patch.asks = diff.asks;
-                slot_tick.books.push_back(std::move(patch));
-
-                send.last_bids = view.bids;
-                send.last_asks = view.asks;
+            } else {
+                DiffBooksInto(send.last_bids, send.last_asks, view_scratch_.bids,
+                              view_scratch_.asks, component.tick_size(), diff_scratch_);
+                if (!diff_scratch_.empty()) {
+                    slot_tick.books.push_back(SlotBookUpdateView{});
+                    SlotBookUpdateView& patch = slot_tick.books.back();
+                    patch.component_id = component.component_id();
+                    patch.kind = BookPatchKind::Diff;
+                    patch.bids = diff_scratch_.bids;
+                    patch.asks = diff_scratch_.asks;
+                    send.last_bids = view_scratch_.bids;
+                    send.last_asks = view_scratch_.asks;
+                }
             }
         }
-
-        tick.slots.push_back(std::move(slot_tick));
     }
 
     TrimWindowForLags();
-    return tick;
+    return tick_scratch_;
 }
 
 bool Population::Advance() {

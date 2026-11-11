@@ -25,4 +25,8 @@ struct BookDiffResult {
                                        const std::vector<Level>& after_asks,
                                        double tick_size);
 
+void DiffBooksInto(const std::vector<Level>& before_bids, const std::vector<Level>& before_asks,
+                   const std::vector<Level>& after_bids, const std::vector<Level>& after_asks,
+                   double tick_size, BookDiffResult& out);
+
 }  // namespace population

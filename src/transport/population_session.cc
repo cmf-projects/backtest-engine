@@ -104,19 +104,19 @@ PopulationSession::Step PopulationSession::SendTickFromPopulation() {
     if (pop_ == nullptr) {
         return FinishFatal(ErrorCode::Internal, "no population", false);
     }
-    const BusTick tick = ToBusTick(pop_->MakeTick());
+    ToBusTickInto(pop_->MakeTick(), tick_buf_);
 #if SPDLOG_ACTIVE_LEVEL <= SPDLOG_LEVEL_TRACE
-    for (const auto& slot : tick.slots) {
+    for (const auto& slot : tick_buf_.slots) {
         for (const auto& tr : slot.trades) {
             LOG_TRACE("fill pop_ts={} slot={} oid={} comp={} px={} qty={} leaves={} exec={}",
-                      tick.pop_ts_ns, slot.slot_id, tr.client_order_id, tr.component_id, tr.price,
-                      tr.qty, tr.leaves, static_cast<unsigned>(tr.exec_type));
+                      tick_buf_.pop_ts_ns, slot.slot_id, tr.client_order_id, tr.component_id,
+                      tr.price, tr.qty, tr.leaves, static_cast<unsigned>(tr.exec_type));
         }
     }
-    LOG_TRACE("tick pop_ts={} slots={} books_shared={}", tick.pop_ts_ns, tick.slots.size(),
-              tick.books.size());
+    LOG_TRACE("tick pop_ts={} slots={} books_shared={}", tick_buf_.pop_ts_ns, tick_buf_.slots.size(),
+              tick_buf_.books.size());
 #endif
-    EncodeBusTickInto(tick, encode_buf_);
+    EncodeBusTickInto(tick_buf_, encode_buf_);
     if (!SendOut(BusMsgType::Tick, encode_buf_)) {
         return FinishFatal(ErrorCode::Internal, "Tick send failed", false);
     }

@@ -54,10 +54,13 @@ namespace {
     return BusExecType::Unspecified;
 }
 
-void AppendLevels(std::vector<BusBookLevel>& out, const std::vector<population::Level>& in) {
-    out.reserve(in.size());
-    for (const auto& lvl : in) {
-        out.push_back(BusBookLevel{.price = FormatDecimal(lvl.price), .qty = lvl.qty});
+void AppendLevelsInto(std::vector<BusBookLevel>& out, const std::vector<population::Level>& in) {
+    if (out.size() != in.size()) {
+        out.resize(in.size());
+    }
+    for (std::size_t i = 0; i < in.size(); ++i) {
+        FormatDecimalInto(in[i].price, out[i].price);
+        out[i].qty = in[i].qty;
     }
 }
 
@@ -80,14 +83,20 @@ bool ParseDecimal(const std::string& text, double& out) {
     }
 }
 
-std::string FormatDecimal(double value) {
+void FormatDecimalInto(double value, std::string& out) {
     char buf[64];
-    // Enough digits to round-trip typical market prices; wire is decimal text.
     const int n = std::snprintf(buf, sizeof(buf), "%.15g", value);
     if (n <= 0 || static_cast<std::size_t>(n) >= sizeof(buf)) {
-        return {};
+        out.clear();
+        return;
     }
-    return std::string(buf, static_cast<std::size_t>(n));
+    out.assign(buf, static_cast<std::size_t>(n));
+}
+
+std::string FormatDecimal(double value) {
+    std::string out;
+    FormatDecimalInto(value, out);
+    return out;
 }
 
 population::SlotConfig ToSlotConfig(const BusSlotConfig& in) {
@@ -136,44 +145,56 @@ population::OrderBatch ToOrderBatch(const BusOrderBatch& in) {
     return out;
 }
 
-BusTick ToBusTick(const population::TickView& in) {
-    BusTick out;
+void ToBusTickInto(const population::TickView& in, BusTick& out) {
     out.pop_ts_ns = in.pop_ts_ns;
-    out.books.reserve(in.books.size());
-    for (const auto& book : in.books) {
-        BusBookUpdate u;
+    if (out.books.size() != in.books.size()) {
+        out.books.resize(in.books.size());
+    }
+    for (std::size_t i = 0; i < in.books.size(); ++i) {
+        const auto& book = in.books[i];
+        BusBookUpdate& u = out.books[i];
         u.component_id = book.component_id;
         u.kind = ToBusPatchKind(book.kind);
-        AppendLevels(u.bids, book.bids);
-        AppendLevels(u.asks, book.asks);
-        out.books.push_back(std::move(u));
+        AppendLevelsInto(u.bids, book.bids);
+        AppendLevelsInto(u.asks, book.asks);
     }
-    out.slots.reserve(in.slots.size());
-    for (const auto& slot : in.slots) {
-        BusSlotTick st;
+    if (out.slots.size() != in.slots.size()) {
+        out.slots.resize(in.slots.size());
+    }
+    for (std::size_t si = 0; si < in.slots.size(); ++si) {
+        const auto& slot = in.slots[si];
+        BusSlotTick& st = out.slots[si];
         st.slot_id = slot.slot_id;
-        st.books.reserve(slot.books.size());
-        for (const auto& book : slot.books) {
-            BusBookUpdate u;
+        if (st.books.size() != slot.books.size()) {
+            st.books.resize(slot.books.size());
+        }
+        for (std::size_t bi = 0; bi < slot.books.size(); ++bi) {
+            const auto& book = slot.books[bi];
+            BusBookUpdate& u = st.books[bi];
             u.component_id = book.component_id;
             u.kind = ToBusPatchKind(book.kind);
-            AppendLevels(u.bids, book.bids);
-            AppendLevels(u.asks, book.asks);
-            st.books.push_back(std::move(u));
+            AppendLevelsInto(u.bids, book.bids);
+            AppendLevelsInto(u.asks, book.asks);
         }
-        st.trades.reserve(slot.trades.size());
-        for (const auto& trade : slot.trades) {
-            st.trades.push_back(BusTrade{
-                .client_order_id = trade.client_order_id,
-                .exec_type = ToBusExec(trade.exec_type),
-                .component_id = trade.component_id,
-                .price = FormatDecimal(trade.price),
-                .qty = trade.qty,
-                .leaves = trade.leaves,
-            });
+        if (st.trades.size() != slot.trades.size()) {
+            st.trades.resize(slot.trades.size());
         }
-        out.slots.push_back(std::move(st));
+        for (std::size_t ti = 0; ti < slot.trades.size(); ++ti) {
+            const auto& trade = slot.trades[ti];
+            BusTrade& tr = st.trades[ti];
+            tr.client_order_id = trade.client_order_id;
+            tr.exec_type = ToBusExec(trade.exec_type);
+            tr.component_id = trade.component_id;
+            FormatDecimalInto(trade.price, tr.price);
+            tr.qty = trade.qty;
+            tr.leaves = trade.leaves;
+        }
     }
+}
+
+BusTick ToBusTick(const population::TickView& in) {
+    BusTick out;
+    ToBusTickInto(in, out);
     return out;
 }
 

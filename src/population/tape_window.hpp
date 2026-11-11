@@ -4,7 +4,6 @@
 
 #include <cstdint>
 #include <deque>
-#include <optional>
 
 namespace population {
 
@@ -27,8 +26,8 @@ public:
     [[nodiscard]] std::uint64_t head_ts_ns() const;
 
     // Latest snapshot with ts_ns <= at_ts_ns.
-    // nullopt if empty or at_ts_ns < floor.
-    [[nodiscard]] std::optional<SnapshotEvent> AtOrBefore(std::uint64_t at_ts_ns) const;
+    // nullptr if empty or at_ts_ns < floor. Pointer valid until Trim/Append.
+    [[nodiscard]] const SnapshotEvent* AtOrBefore(std::uint64_t at_ts_ns) const;
 
 private:
     std::deque<SnapshotEvent> snaps_;

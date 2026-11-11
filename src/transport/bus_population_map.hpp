@@ -22,5 +22,7 @@ namespace transport {
 
 [[nodiscard]] population::OrderBatch ToOrderBatch(const BusOrderBatch& in);
 [[nodiscard]] BusTick ToBusTick(const population::TickView& in);
+void ToBusTickInto(const population::TickView& in, BusTick& out);
+void FormatDecimalInto(double value, std::string& out);
 
 }  // namespace transport

@@ -36,9 +36,9 @@ std::uint64_t TapeWindow::head_ts_ns() const {
     return snaps_.back().ts_ns;
 }
 
-std::optional<SnapshotEvent> TapeWindow::AtOrBefore(std::uint64_t at_ts_ns) const {
+const SnapshotEvent* TapeWindow::AtOrBefore(std::uint64_t at_ts_ns) const {
     if (snaps_.empty() || at_ts_ns < snaps_.front().ts_ns) {
-        return std::nullopt;
+        return nullptr;
     }
     // Linear scan is fine for P0; snaps_ is ordered by ts.
     const SnapshotEvent* best = nullptr;
@@ -48,10 +48,7 @@ std::optional<SnapshotEvent> TapeWindow::AtOrBefore(std::uint64_t at_ts_ns) cons
         }
         best = &snap;
     }
-    if (best == nullptr) {
-        return std::nullopt;
-    }
-    return *best;
+    return best;
 }
 
 }  // namespace population
