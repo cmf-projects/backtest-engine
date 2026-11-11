@@ -75,4 +75,4 @@ make population-smoke
 make population          # listen; default UDS /tmp/cmf-population.sock
 ```
 
-Next coding milestone: see IMPL (currently **3.1 MergedTape** after closed веха 2). Ops last: graceful Ctrl+C + plain/JSON logger (веха 5).
+Next coding milestone: see IMPL (**3.2** multi-component Population; 3.1 MergedTape done). Ops last: graceful Ctrl+C + plain/JSON logger (веха 5).

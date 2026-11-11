@@ -91,7 +91,7 @@ CMF binary не ломаем. Population lib линкуем в новый app.
 
 | # | Задача | Done when |
 | --- | --- | --- |
-| 3.1 | `MergedTape` / scheduler: N `Tape` → события, упорядоченные по `ts_ns`; на шаге keep-last per component | unit: 2 ленты с дырами |
+| 3.1 | `MergedTape` / scheduler: N `Tape` → события, упорядоченные по `ts_ns`; на шаге keep-last per component | ✅ unit: 2 ленты с дырами (`merged_tape_test`) |
 | 3.2 | `Population` → multi-component: FileBook / TapeWindow / Impact / Working **per component_id** | API Open.components 1…3 |
 | 3.3 | MakeTick: SlotTick.books[] по всем ногам, у которых уже было first event; нет ноги → нет book | тест spot+fut; тест только fut |
 | 3.4 | Match/Submit с `component_id`; неизвестный id → fatal (пока) | тест |

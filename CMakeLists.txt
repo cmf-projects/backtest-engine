@@ -46,6 +46,7 @@ add_library(population_lib
   src/population/clock.cc
   src/population/file_book.cc
   src/population/tape_window.cc
+  src/population/merged_tape.cc
   src/population/book_diff.cc
   src/population/slot.cc
   src/population/slot_orders.cc
@@ -120,6 +121,7 @@ if(CMF_BUILD_TESTS)
   add_executable(population_tests
     tests/population/population_tick_test.cc
     tests/population/tape_window_test.cc
+    tests/population/merged_tape_test.cc
     tests/population/order_submit_test.cc
     tests/population/match_test.cc
     tests/population/impact_test.cc)
