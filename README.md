@@ -17,15 +17,37 @@ glossary: [`docs/GLOSSARY.md`](docs/GLOSSARY.md).
 
 ```bash
 make build
-make population-smoke   # same-process Open → Tick → Advance → End
-make population         # listen on UDS (default /tmp/cmf-population.sock)
+make test
+make population-smoke   # fake Engine in-process: Create → Open → Tick → Advance → End
+make population         # real venue listen (default UDS /tmp/cmf-population.sock)
 ```
 
-Knobs: `POPULATION_UDS`, `POPULATION_DRAIN_MS`, `CONFIG=options/population_venue.toml`.  
-Open still carries `dataset_path` (JSONL on the venue host). SPSC queues are **in-process** for now (shm later).
+### Run venue + fake client
+
+**Smoke (recommended first check)** — one process, no external Engine:
+
+```bash
+make population-smoke
+# optional: DATASET=path/to.jsonl POPULATION_UDS=/tmp/my.sock make population-smoke
+```
+
+Uses `testdata/population/smoke.jsonl` by default. Prints ticks and exits 0 on success.
+
+**Long-lived venue** (Trading Engine dials in separately):
+
+```bash
+make population
+# or: POPULATION_UDS=/tmp/cmf-population.sock CONFIG=options/population_venue.toml ./build/population_venue
+```
+
+Default socket: `/tmp/cmf-population.sock` (override `POPULATION_UDS` or toml `uds_path`).  
+Engine flow: connect UDS → `CreateQueues` → SPSC `Open` / `Tick` / `OrderBatch` / `Advance` / `Close`.  
+SPSC queues are **in-process** for now (shm later); Open still carries `dataset_path` (JSONL on the venue host).
 
 **Shutdown:** `SIGINT` / `SIGTERM` (Ctrl+C) stops Accept/Create, finishes live populations with
 `SessionEnded{fatal, "venue shutdown"}`, joins session threads, unlinks the UDS, exits 0.
+
+Knobs: `POPULATION_UDS`, `POPULATION_DRAIN_MS`, `CONFIG=options/population_venue.toml`.
 
 ## Configure
 

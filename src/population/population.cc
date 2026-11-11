@@ -1,6 +1,7 @@
 #include "population/population.hpp"
 
 #include "population/book_diff.hpp"
+#include "population/price_ticks.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -151,15 +152,11 @@ const ImpactState* Population::SlotImpact(std::uint32_t slot_id) const {
     return SlotImpact(slot_id, components_.front().component_id_);
 }
 
-long long Population::ToTicks(double price, double tick_size) const {
-    return static_cast<long long>(std::llround(price / tick_size));
-}
-
 bool Population::OnGrid(double price, double tick_size) const {
     if (!(price > 0.0) || !std::isfinite(price)) {
         return false;
     }
-    const double on_grid = static_cast<double>(ToTicks(price, tick_size)) * tick_size;
+    const double on_grid = static_cast<double>(PriceToTicks(price, tick_size)) * tick_size;
     return std::abs(price - on_grid) < tick_size / 1024.0;
 }
 
@@ -212,6 +209,7 @@ SnapshotEvent Population::ViewSnap(const SlotConfig& cfg, const Component& compo
 
 SnapshotEvent Population::EffectiveView(const SlotConfig& cfg,
                                         const Component& component) const {
+    // TZ §8.4 P0: old file snap @ view_ts, minus *current* eaten (not historical).
     SnapshotEvent view = ViewSnap(cfg, component);
     slot_impact_.at(SlotComponentKey{cfg.slot_id, component.component_id()})
         .ApplyTo(view.bids, view.asks, component.tick_size());
@@ -393,7 +391,7 @@ OrderResult Population::SubmitOne(const NewOrder& order) {
     working.client_order_id = order.client_order_id;
     working.component_id = order.component_id;
     working.side = order.side;
-    working.price_ticks = ToTicks(order.price, component->tick_size());
+    working.price_ticks = PriceToTicks(order.price, component->tick_size());
     working.leaves = order.qty;
     working.tif = order.tif;
     working.effective_ts_ns = clock_.pop_ts_ns() + cfg->delta_ns;

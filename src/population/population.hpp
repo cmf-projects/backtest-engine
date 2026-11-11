@@ -141,7 +141,6 @@ private:
     [[nodiscard]] OrderResult ValidateCancel(const CancelOrder& cancel) const;
     [[nodiscard]] OrderResult SubmitOne(const NewOrder& order);
     [[nodiscard]] OrderResult CancelOne(const CancelOrder& cancel);
-    [[nodiscard]] long long ToTicks(double price, double tick_size) const;
     [[nodiscard]] bool OnGrid(double price, double tick_size) const;
 
     std::vector<Component> components_;

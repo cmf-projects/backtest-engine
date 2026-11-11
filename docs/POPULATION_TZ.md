@@ -430,11 +430,14 @@ timeout; конец pop сносит только её SPSC.
 - `trades` / Order — с `component_id`.
 - Лимит уровней: **64** на сторону (как CMF), пока не решим иначе.
 
-### 8.4 Impact на `view_ts`
+### 8.4 Impact на `view_ts` — **закрыто (P0)**
 
-View = effective на `t - md_lag`. Нужен ли **исторический** eaten на view_ts
-(как будто recovery крутился в прошлом), или упрощение: текущий eaten, вычтенный
-из **старого** file snap? Влияет на честность md_lag.
+View = file snap на `t - md_lag`, затем **текущий** eaten слота (`ImpactState`
+на `pop_ts`), вычтенный из этого старого snap. **Не** реконструируем
+исторический eaten «как будто recovery крутился в прошлом».
+
+ADR: упрощение ok для P0 (IMPL 4.2); честнее по md_lag было бы хранить
+eaten-timeline — отложено.
 
 ### 8.5 Bundle / выравнивание — **закрыто**
 

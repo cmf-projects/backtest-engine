@@ -19,7 +19,7 @@
 | `apps/population_venue` + smoke | listen UDS; in-process smoke |
 | `third_party/ipc.h` | не подключён (эталон SPMC; свой SPSC уже есть) |
 
-Gap до ТЗ: веха 4 (полировка); Submit ещё без recoverable Ack.
+Gap до ТЗ: логер (5.2–5.3); Submit ещё без recoverable Ack.
 
 ---
 
@@ -105,9 +105,9 @@ CMF binary не ломаем. Population lib линкуем в новый app.
 
 | # | Задача | Done when |
 | --- | --- | --- |
-| 4.1 | Один `PriceToTicks` util (см. `TODO_PRICE_TO_TICKS.md`) | нет локальных копий в population path |
-| 4.2 | Решить §8.4 impact@view_ts (упрощение ok для P0: current eaten − old file snap) | ADR-строка в ТЗ или комментарий + тест |
-| 4.3 | README: UDS path, как поднять population venue + fake client | абзац + make target |
+| 4.1 | Один `PriceToTicks` util (см. `TODO_PRICE_TO_TICKS.md`) | ✅ `population/price_ticks.hpp` |
+| 4.2 | Решить §8.4 impact@view_ts (упрощение ok для P0: current eaten − old file snap) | ✅ ADR в ТЗ §8.4; `MdLagAppliesCurrentImpactToOldFileSnap` |
+| 4.3 | README: UDS path, как поднять population venue + fake client | ✅ README «Run venue + fake client» + `make population-smoke` |
 
 ---
 

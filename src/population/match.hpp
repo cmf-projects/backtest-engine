@@ -1,6 +1,7 @@
 #pragma once
 
 #include "population/order.hpp"
+#include "population/price_ticks.hpp"
 #include "population/types.hpp"
 
 #include <cstdint>
@@ -17,7 +18,6 @@ void MatchOne(WorkingOrder& working, std::vector<Level>& opposite, double tick_s
 [[nodiscard]] bool CanFullyFill(Side side, long long price_ticks, std::uint64_t qty,
                                 const std::vector<Level>& opposite, double tick_size);
 
-[[nodiscard]] long long PriceToTicks(double price, double tick_size);
-
 }  // namespace population
+
 

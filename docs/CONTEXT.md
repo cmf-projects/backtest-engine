@@ -75,4 +75,4 @@ make population-smoke
 make population          # listen; default UDS /tmp/cmf-population.sock
 ```
 
-Next coding milestone: see IMPL (**веха 4** полировка; **5.1** graceful Ctrl+C done). Ops left: логер plain/JSON (5.2–5.3).
+Next coding milestone: see IMPL (**5.2–5.3** логер plain/JSON; веха 4 + 5.1 done).

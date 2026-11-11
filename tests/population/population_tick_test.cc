@@ -1,3 +1,4 @@
+#include "population/order.hpp"
 #include "population/population.hpp"
 #include "population/tick.hpp"
 
@@ -10,9 +11,14 @@
 
 using population::BookPatchKind;
 using population::Level;
+using population::NewOrder;
+using population::OrderBatch;
+using population::OrderResult;
 using population::Population;
+using population::Side;
 using population::SlotConfig;
 using population::SnapshotEvent;
+using population::TimeInForce;
 using population::test::FakeTape;
 
 namespace {
@@ -112,4 +118,41 @@ TEST(PopulationTick, MdLagSlotsSeeDifferentBooks) {
         EXPECT_EQ(tick.slots[1].books[0].kind, BookPatchKind::Diff);
         EXPECT_EQ(tick.slots[1].books[0].bids[0].qty, 8u);  // view@200
     }
+}
+
+// TZ §8.4 / IMPL 4.2: lagged view = old file snap − *current* eaten (not historical).
+TEST(PopulationTick, MdLagAppliesCurrentImpactToOldFileSnap) {
+    const double lambda = 1e-15;  // negligible recovery over 100ns
+    auto tape = std::make_unique<FakeTape>(std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 10}}),
+        Ev(2, 200, {{100.0, 10}}, {{101.0, 10}}),
+    });
+
+    Population pop("C1", 0.01, std::move(tape),
+                   {SlotConfig{.slot_id = 1, .md_lag_ns = 100, .delta_ns = 1,
+                               .impact_lambda = lambda}});
+    pop.Start();
+    (void)pop.MakeTick();  // pop=100, view clamps to floor ask=10 keyframe
+
+    OrderBatch batch;
+    batch.orders.push_back(NewOrder{
+        .slot_id = 1,
+        .client_order_id = 1,
+        .component_id = "C1",
+        .side = Side::Buy,
+        .price = 101.0,
+        .qty = 4,
+        .tif = TimeInForce::Day,
+    });
+    EXPECT_EQ(pop.Submit(batch).order_results[0], OrderResult::Ok);
+
+    ASSERT_TRUE(pop.Advance());  // pop=200 → fill @ ask; eaten=4
+    const auto tick = pop.MakeTick();
+    // view_ts=100: file ask still 10, current eaten 4 → effective 6
+    ASSERT_EQ(tick.slots.size(), 1u);
+    ASSERT_EQ(tick.slots[0].books.size(), 1u);
+    EXPECT_EQ(tick.slots[0].books[0].kind, BookPatchKind::Diff);
+    ASSERT_FALSE(tick.slots[0].books[0].asks.empty());
+    EXPECT_DOUBLE_EQ(tick.slots[0].books[0].asks[0].price, 101.0);
+    EXPECT_EQ(tick.slots[0].books[0].asks[0].qty, 6u);
 }

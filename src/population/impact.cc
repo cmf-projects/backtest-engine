@@ -1,6 +1,6 @@
 #include "population/impact.hpp"
 
-#include "population/match.hpp"
+#include "population/price_ticks.hpp"
 
 #include <algorithm>
 #include <cmath>

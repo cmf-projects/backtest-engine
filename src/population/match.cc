@@ -1,17 +1,8 @@
 #include "population/match.hpp"
 
 #include <algorithm>
-#include <cmath>
-#include <stdexcept>
 
 namespace population {
-
-long long PriceToTicks(double price, double tick_size) {
-    if (!(tick_size > 0.0) || !std::isfinite(tick_size) || !std::isfinite(price)) {
-        throw std::invalid_argument("population::PriceToTicks: invalid price/tick_size");
-    }
-    return static_cast<long long>(std::llround(price / tick_size));
-}
 
 bool CanFullyFill(Side side, long long price_ticks, std::uint64_t qty,
                   const std::vector<Level>& opposite, double tick_size) {

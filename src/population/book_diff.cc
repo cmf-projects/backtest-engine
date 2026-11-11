@@ -1,28 +1,21 @@
 #include "population/book_diff.hpp"
 
-#include <cmath>
+#include "population/price_ticks.hpp"
+
 #include <map>
-#include <stdexcept>
 
 namespace population {
 namespace {
-
-[[nodiscard]] long long ToTicks(double price, double tick_size) {
-    if (!(tick_size > 0.0) || !std::isfinite(tick_size) || !std::isfinite(price)) {
-        throw std::invalid_argument("population::DiffBooks: invalid price/tick_size");
-    }
-    return static_cast<long long>(std::llround(price / tick_size));
-}
 
 void DiffSide(const std::vector<Level>& before, const std::vector<Level>& after, double tick_size,
               std::vector<Level>& out) {
     std::map<long long, Level> prev;
     std::map<long long, Level> next;
     for (const Level& level : before) {
-        prev[ToTicks(level.price, tick_size)] = level;
+        prev[PriceToTicks(level.price, tick_size)] = level;
     }
     for (const Level& level : after) {
-        next[ToTicks(level.price, tick_size)] = level;
+        next[PriceToTicks(level.price, tick_size)] = level;
     }
 
     for (const auto& [ticks, level] : next) {
