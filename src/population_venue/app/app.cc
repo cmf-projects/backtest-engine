@@ -51,7 +51,7 @@ void RunPopulationSession(transport::UdsConn& conn, transport::QueueRegistry& re
 
     transport::PopulationSession session(conn, registry, std::move(session_cfg));
     const auto finished = session.Run();
-    PV_INFO("session {} done ({})", id, FinishName(finished));
+    LOG_INFO("session {} done ({})", id, FinishName(finished));
 }
 
 // Like ServeCreateQueues, but returns nullopt on timeout so the app can check stop.
@@ -103,18 +103,18 @@ int App::Run() {
     using transport::UdsListener;
 
     try {
-        PV_INFO("listen {} (drain_ms={})", cfg_.uds_path, cfg_.drain_timeout_ms);
+        LOG_INFO("listen {} (drain_ms={})", cfg_.uds_path, cfg_.drain_timeout_ms);
 
         auto listener = UdsListener::Bind(cfg_.uds_path);
         if (!listener.valid()) {
-            PV_ERROR("bind failed");
+            LOG_ERROR("bind failed");
             return 1;
         }
 
         std::atomic<bool>& shutdown = ShutdownFlag();
 
         while (!StopRequested()) {
-            PV_INFO("waiting for engine...");
+            LOG_INFO("waiting for engine...");
             int raw = -2;
             while (!StopRequested()) {
                 raw = listener.AcceptTimeout(kAcceptPollMs);
@@ -124,18 +124,18 @@ int App::Run() {
                 break;
             }
             if (StopRequested()) {
-                PV_INFO("shutdown — stop accept");
+                LOG_INFO("shutdown — stop accept");
                 break;
             }
             if (raw < 0) {
-                PV_ERROR("accept failed");
+                LOG_ERROR("accept failed");
                 return 1;
             }
 
             UdsConn conn(raw);
             QueueRegistry registry;
             std::vector<std::thread> sessions;
-            PV_INFO("engine connected");
+            LOG_INFO("engine connected");
 
             while (conn.valid() && !StopRequested()) {
                 auto ack_opt = ServeCreateQueuesPoll(conn, registry, kCreatePollMs);
@@ -145,26 +145,26 @@ int App::Run() {
                 const auto& ack = *ack_opt;
                 if (ack.status != AckStatus::Ok) {
                     if (ack.population_id.empty()) {
-                        PV_WARN("control EOF or bad create");
+                        LOG_WARN("control EOF or bad create");
                         break;
                     }
-                    PV_WARN("create rejected: {}", ack.message);
+                    LOG_WARN("create rejected: {}", ack.message);
                     continue;
                 }
 
                 if (StopRequested()) {
-                    PV_INFO("shutdown — reject new create after stop");
+                    LOG_INFO("shutdown — reject new create after stop");
                     break;
                 }
 
-                PV_INFO("start population_id={}", ack.population_id);
+                LOG_INFO("start population_id={}", ack.population_id);
 
                 sessions.emplace_back(RunPopulationSession, std::ref(conn), std::ref(registry),
                                       ack.population_id, cfg_.drain_timeout_ms, &shutdown);
             }
 
             if (StopRequested() && !sessions.empty()) {
-                PV_INFO("shutdown — waiting for {} session(s)", sessions.size());
+                LOG_INFO("shutdown — waiting for {} session(s)", sessions.size());
             }
 
             for (auto& t : sessions) {
@@ -178,10 +178,10 @@ int App::Run() {
             }
         }
 
-        PV_INFO("exit 0 (graceful)");
+        LOG_INFO("exit 0 (graceful)");
         return 0;
     } catch (const std::exception& ex) {
-        PV_ERROR("{}", ex.what());
+        LOG_ERROR("{}", ex.what());
         return 1;
     }
 }
