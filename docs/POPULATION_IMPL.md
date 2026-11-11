@@ -19,7 +19,7 @@
 | `apps/population_venue` + smoke | listen UDS; in-process smoke |
 | `third_party/ipc.h` | не подключён (эталон SPMC; свой SPSC уже есть) |
 
-Gap до ТЗ: MakeTick/Match multi-component polish (3.3–3.5); Submit ещё без recoverable Ack.
+Gap до ТЗ: веха 4 (полировка); Submit ещё без recoverable Ack.
 
 ---
 
@@ -93,9 +93,9 @@ CMF binary не ломаем. Population lib линкуем в новый app.
 | --- | --- | --- |
 | 3.1 | `MergedTape` / scheduler: N `Tape` → события, упорядоченные по `ts_ns`; на шаге keep-last per component | ✅ unit: 2 ленты с дырами (`merged_tape_test`) |
 | 3.2 | `Population` → multi-component: FileBook / TapeWindow / Impact / Working **per component_id** | ✅ API Open.components 1…3 (`population_bundle_test`) |
-| 3.3 | MakeTick: SlotTick.books[] по всем ногам, у которых уже было first event; нет ноги → нет book | тест spot+fut; тест только fut |
-| 3.4 | Match/Submit с `component_id`; неизвестный id → fatal (пока) | тест |
-| 3.5 | Один `pop_ts`, один Advance двигает merge | детерминизм: два прогона → те же trades |
+| 3.3 | MakeTick: SlotTick.books[] по всем ногам, у которых уже было first event; нет ноги → нет book | ✅ `MakeTickSpotAndFutKeyframes` / `MakeTickOnlyFutUntilSpotStarts` |
+| 3.4 | Match/Submit с `component_id`; неизвестный id → fatal (пока) | ✅ `SubmitRejectsUnknownAndNotPresentComponent` / `MatchUsesOwnComponentBook` |
+| 3.5 | Один `pop_ts`, один Advance двигает merge | ✅ `TwoRunsSameTrades` |
 
 Рефактор: не плодить три `Population`; одна популяция, map `component_id → component state`.
 

@@ -75,4 +75,4 @@ make population-smoke
 make population          # listen; default UDS /tmp/cmf-population.sock
 ```
 
-Next coding milestone: see IMPL (**3.3** MakeTick books[] for all present components; 3.2 done). Ops last: graceful Ctrl+C + plain/JSON logger (веха 5).
+Next coding milestone: see IMPL (**веха 4** полировка; bundle 3.x done). Ops last: graceful Ctrl+C + plain/JSON logger (веха 5).

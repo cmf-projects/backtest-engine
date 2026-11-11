@@ -72,6 +72,7 @@ Population::Population(std::vector<ComponentSpec> components, std::vector<SlotCo
     }
 }
 
+// Single-component convenience (existing tests / P0 call sites).
 Population::Population(std::string component_id, double tick_size, TapePtr tape,
                        std::vector<SlotConfig> slots)
     : Population(MakeSingleSpec(std::move(component_id), tick_size, std::move(tape)),

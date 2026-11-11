@@ -313,7 +313,7 @@ Working и ImpactState в venue. На wire:
   per-slot `md_lag` — патчи в **`SlotTick.books`** (Keyframe → Diff).
 - Order/Trade с `component_id`. Один `Δ` на слот (не три HELLO).
 
-**Реализация сейчас:** один component — временно; цель — довести до 1…3.
+**Реализация:** `Population` принимает 1…3 components; Tick books только для already-present ног (IMPL 3.2–3.3).
 
 ### 5.4 Цикл одного тика (логический) — канон
 
