@@ -6,7 +6,7 @@
 // On full mid-send: return false (no Abort). Session waits drain_timeout then kills the pop.
 
 #include "transport/bus_messages.hpp"
-#include "transport/queue_registry.hpp"
+#include "transport/queue_types.hpp"
 
 #include <cstdint>
 #include <vector>

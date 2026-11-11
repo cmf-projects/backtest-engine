@@ -41,8 +41,8 @@ PopulationSession::PopulationSession(UdsConn& conn, QueueRegistry& registry, Ses
     if (pair == nullptr) {
         return;
     }
-    out_ = SpscBus(&pair->out);
-    in_ = SpscBus(&pair->in);
+    out_ = SpscBus(pair->out.get());
+    in_ = SpscBus(pair->in.get());
 }
 
 bool PopulationSession::SendOut(BusMsgType type, const std::vector<std::uint8_t>& payload) {

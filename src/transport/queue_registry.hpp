@@ -1,41 +1,24 @@
 #pragma once
 
-// In-process registry of per-population SPSC pairs (venue process).
-// CreateAck.out_queue / in_queue are keys into this registry.
-// Cross-process shm comes later; API stays name-based.
+// Per-population SPSC pairs in POSIX shm (venue process owns Create/Unlink).
+// CreateAck.out_queue / in_queue are shm names; engine AttachShmQueue's them.
 
 #include "transport/control.hpp"
-#include "transport/spsc_ring.hpp"
+#include "transport/shm_queue.hpp"
 
-#include <cstddef>
-#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
-#include <type_traits>
 #include <unordered_map>
 
 namespace transport {
 
-inline constexpr std::size_t kQueueCapacity = 1024;
-// Bytes per ring slot body; logical bus messages may span many slots.
-inline constexpr std::size_t kQueuePayloadBytes = 2040;
-
-struct QueueMessage {
-    std::uint32_t size = 0;
-    std::uint8_t bytes[kQueuePayloadBytes]{};
-};
-
-static_assert(std::is_trivially_copyable_v<QueueMessage>);
-
-using PopulationQueue = SpscRing<QueueMessage, kQueueCapacity>;
-
 struct QueuePair {
     std::string population_id;
-    std::string out_name;  // venue → engine
-    std::string in_name;   // engine → venue
-    PopulationQueue out;
-    PopulationQueue in;
+    std::string out_name;  // venue → engine (shm)
+    std::string in_name;   // engine → venue (shm)
+    ShmQueueMapping out;
+    ShmQueueMapping in;
 };
 
 class QueueRegistry {
@@ -51,10 +34,27 @@ public:
                                     "population already has queues");
         }
 
+        const std::string out_name = MakeOutQueueName(population_id);
+        const std::string in_name = MakeInQueueName(population_id);
+
+        auto out = CreateShmQueue(out_name);
+        if (!out) {
+            return MakeCreateReject(population_id, ErrorCode::CreateFailed,
+                                    "shm create out failed");
+        }
+        auto in = CreateShmQueue(in_name);
+        if (!in) {
+            out->Reset();
+            return MakeCreateReject(population_id, ErrorCode::CreateFailed,
+                                    "shm create in failed");
+        }
+
         auto pair = std::make_unique<QueuePair>();
         pair->population_id = population_id;
-        pair->out_name = "out:" + population_id;
-        pair->in_name = "in:" + population_id;
+        pair->out_name = out_name;
+        pair->in_name = in_name;
+        pair->out = std::move(*out);
+        pair->in = std::move(*in);
 
         QueuePair* raw = pair.get();
         by_out_name_.emplace(raw->out_name, raw);
@@ -72,7 +72,7 @@ public:
         }
         by_out_name_.erase(it->second->out_name);
         by_in_name_.erase(it->second->in_name);
-        by_pop_.erase(it);
+        by_pop_.erase(it);  // ShmQueueMapping dtor unmaps + unlinks
         return true;
     }
 
@@ -85,13 +85,13 @@ public:
     [[nodiscard]] PopulationQueue* FindOut(const std::string& out_name) {
         std::lock_guard lock(mu_);
         const auto it = by_out_name_.find(out_name);
-        return it == by_out_name_.end() ? nullptr : &it->second->out;
+        return it == by_out_name_.end() ? nullptr : it->second->out.get();
     }
 
     [[nodiscard]] PopulationQueue* FindIn(const std::string& in_name) {
         std::lock_guard lock(mu_);
         const auto it = by_in_name_.find(in_name);
-        return it == by_in_name_.end() ? nullptr : &it->second->in;
+        return it == by_in_name_.end() ? nullptr : it->second->in.get();
     }
 
     [[nodiscard]] std::size_t size() const {

@@ -1,4 +1,4 @@
-// Same-process smoke: UDS control + shared in-process SPSC (shm not ready yet).
+// Same-process smoke: UDS control + POSIX shm SPSC (client attaches by CreateAck names).
 // Usage: population_smoke [dataset.jsonl] [uds_path]
 
 #include "transport/bus_framing.hpp"
@@ -6,6 +6,7 @@
 #include "transport/control.hpp"
 #include "transport/population_session.hpp"
 #include "transport/queue_registry.hpp"
+#include "transport/shm_queue.hpp"
 #include "transport/spsc_bus.hpp"
 #include "transport/uds_control.hpp"
 
@@ -39,6 +40,7 @@ using transport::EncodeBusOpen;
 using transport::FinishSessionStatus;
 using transport::PopulationSession;
 using transport::QueueRegistry;
+using transport::AttachShmQueue;
 using transport::RequestCreateQueues;
 using transport::ServeCreateQueues;
 using transport::SessionConfig;
@@ -137,12 +139,15 @@ int main(int argc, char** argv) {
             return;
         }
 
-        SpscBus out(registry.FindOut(ack.out_queue));
-        SpscBus in(registry.FindIn(ack.in_queue));
-        if (!out.valid() || !in.valid()) {
-            std::fprintf(stderr, "smoke: missing queues (in-process only)\n");
+        auto out_map = AttachShmQueue(ack.out_queue);
+        auto in_map = AttachShmQueue(ack.in_queue);
+        if (!out_map || !in_map) {
+            std::fprintf(stderr, "smoke: shm attach failed out=%s in=%s\n",
+                         ack.out_queue.c_str(), ack.in_queue.c_str());
             return;
         }
+        SpscBus out(out_map->get());
+        SpscBus in(in_map->get());
 
         if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(MakeOpen("smoke", dataset)))) {
             return;

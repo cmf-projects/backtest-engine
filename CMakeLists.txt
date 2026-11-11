@@ -104,6 +104,7 @@ target_compile_features(population_lib PUBLIC cxx_std_20)
 # Transport — src/transport/ (UDS control + SPSC ring header)
 # ---------------------------------------------------------------------------
 add_library(transport_lib
+  src/transport/shm_queue.cc
   src/transport/uds_framing.cc
   src/transport/uds_control.cc
   src/transport/bus_framing.cc
@@ -117,6 +118,11 @@ target_include_directories(transport_lib
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>")
 target_compile_features(transport_lib PUBLIC cxx_std_20)
 target_link_libraries(transport_lib PUBLIC cmf::population cmf::dataset Threads::Threads)
+# shm_open lives in librt on older glibc; no-op / unused on modern libcs that fold it in.
+find_library(CMF_LIBRT rt)
+if(CMF_LIBRT)
+  target_link_libraries(transport_lib PUBLIC ${CMF_LIBRT})
+endif()
 
 # ---------------------------------------------------------------------------
 # Population venue app
@@ -145,6 +151,9 @@ target_link_libraries(population_venue PRIVATE cmf::population_venue)
 # Same-process smoke: UDS create + shared QueueRegistry tick loop.
 add_executable(population_smoke apps/population_smoke/main.cc)
 target_link_libraries(population_smoke PRIVATE cmf::transport)
+
+add_executable(population_client apps/population_client/main.cc)
+target_link_libraries(population_client PRIVATE cmf::transport)
 
 # ---------------------------------------------------------------------------
 # Tests (GoogleTest) — population + transport
@@ -180,6 +189,7 @@ if(CMF_BUILD_TESTS)
 
   add_executable(transport_tests
     tests/transport/spsc_ring_test.cc
+    tests/transport/shm_queue_test.cc
     tests/transport/control_test.cc
     tests/transport/queue_registry_test.cc
     tests/transport/uds_control_test.cc
@@ -202,6 +212,7 @@ if(MSVC)
   target_compile_options(population_venue_lib PRIVATE /W4)
   target_compile_options(population_venue PRIVATE /W4)
   target_compile_options(population_smoke PRIVATE /W4)
+  target_compile_options(population_client PRIVATE /W4)
   if(CMF_BUILD_TESTS)
     target_compile_options(population_tests PRIVATE /W4)
     target_compile_options(transport_tests PRIVATE /W4)
@@ -213,6 +224,7 @@ else()
   target_compile_options(population_venue_lib PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(population_venue PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(population_smoke PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(population_client PRIVATE -Wall -Wextra -Wpedantic)
   if(CMF_BUILD_TESTS)
     target_compile_options(population_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(transport_tests PRIVATE -Wall -Wextra -Wpedantic)

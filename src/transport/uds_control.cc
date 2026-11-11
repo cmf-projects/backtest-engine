@@ -294,7 +294,7 @@ FinishSessionStatus FinishSession(UdsConn& conn, QueueRegistry& registry, const 
         return FinishSessionStatus::Failed;
     }
 
-    SpscBus in_bus(&pair->in);
+    SpscBus in_bus(pair->in.get());
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::milliseconds(drain_timeout_ms);
 

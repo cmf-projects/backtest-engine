@@ -1,7 +1,7 @@
 #pragma once
 
 // Bounded single-producer / single-consumer ring (POPULATION_IMPL M0.2).
-// In-process for now; shm / third_party/ipc.h wiring is a later step.
+// Layout is mmap-friendly (see shm_queue); one producer + one consumer.
 //
 // Contract:
 // - Exactly one thread (or coroutine) may call TryPush; exactly one may TryPop.

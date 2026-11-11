@@ -11,8 +11,8 @@ TEST(QueueRegistry, CreateGivesLiveRings) {
     QueueRegistry reg;
     auto ack = reg.Create("pop-1");
     ASSERT_EQ(ack.status, AckStatus::Ok);
-    EXPECT_EQ(ack.out_queue, "out:pop-1");
-    EXPECT_EQ(ack.in_queue, "in:pop-1");
+    EXPECT_EQ(ack.out_queue, "/cmf-pop-1-out");
+    EXPECT_EQ(ack.in_queue, "/cmf-pop-1-in");
     EXPECT_EQ(reg.size(), 1u);
 
     auto* out = reg.FindOut(ack.out_queue);
