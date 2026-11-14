@@ -94,6 +94,7 @@ TEST(BusFraming, TickRoundTripWithBooksAndTrades) {
 
     BusTick tick;
     tick.pop_ts_ns = 42;
+    tick.n_books = 1;
     tick.books.push_back(BusBookUpdate{
         .component_id = "SPOT",
         .kind = BusBookPatchKind::Keyframe,
@@ -102,6 +103,7 @@ TEST(BusFraming, TickRoundTripWithBooksAndTrades) {
     });
     BusSlotTick slot;
     slot.slot_id = 7;
+    slot.n_books = 1;
     slot.books.push_back(BusBookUpdate{
         .component_id = "SPOT",
         .kind = BusBookPatchKind::Diff,

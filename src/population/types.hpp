@@ -7,6 +7,8 @@
 namespace population {
 
 inline constexpr std::size_t kMaxLevelsPerSide = 64;
+// A side diff lists changed levels plus deletions, so it can be both books.
+inline constexpr std::size_t kMaxDiffLevelsPerSide = kMaxLevelsPerSide * 2;
 
 struct Level {
     double price = 0.0;

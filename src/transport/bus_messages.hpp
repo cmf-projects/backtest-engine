@@ -123,6 +123,8 @@ struct BusTrade {
 
 struct BusSlotTick {
     std::uint32_t slot_id = 0;
+    // Live prefix of `books`. Storage may be longer so a tick does not resize it.
+    std::uint32_t n_books = 0;
     std::vector<BusBookUpdate> books;
     std::vector<BusTrade> trades;
 };
@@ -136,6 +138,8 @@ struct BusDecodeScratch {
 
 struct BusTick {
     std::uint64_t pop_ts_ns = 0;
+    // Live prefix of `books`. Storage may be longer so a tick does not resize it.
+    std::uint32_t n_books = 0;
     std::vector<BusBookUpdate> books;  // shared seed (often empty with per-slot md_lag)
     std::vector<BusSlotTick> slots;
     BusDecodeScratch decode_scratch;  // not on wire; reused across DecodeBusTick calls

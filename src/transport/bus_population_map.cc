@@ -64,11 +64,14 @@ namespace {
     return it->second;
 }
 
+void ReserveBookSides(BusBookUpdate& book) {
+    book.bids.reserve(population::kMaxDiffLevelsPerSide);
+    book.asks.reserve(population::kMaxDiffLevelsPerSide);
+}
+
 void AppendLevelsInto(std::vector<BusBookLevel>& out, const std::vector<population::Level>& in,
                       double tick_size) {
-    if (out.size() != in.size()) {
-        out.resize(in.size());
-    }
+    out.resize(in.size());
     for (std::size_t i = 0; i < in.size(); ++i) {
         out[i].price = ToBusPrice(in[i].price, tick_size);
         out[i].qty = in[i].qty;
@@ -155,13 +158,25 @@ population::OrderBatch ToOrderBatch(const BusOrderBatch& in,
     return out;
 }
 
+void PrepareTickStorage(BusTick& out, std::size_t n_slots, std::size_t n_components) {
+    out.books.resize(n_components);
+    for (BusBookUpdate& book : out.books) {
+        ReserveBookSides(book);
+    }
+    out.slots.resize(n_slots);
+    for (BusSlotTick& slot : out.slots) {
+        slot.books.resize(n_components);
+        for (BusBookUpdate& book : slot.books) {
+            ReserveBookSides(book);
+        }
+    }
+}
+
 void ToBusTickInto(const population::TickView& in, BusTick& out,
                    const TickSizeByComponent& tick_sizes) {
     out.pop_ts_ns = in.pop_ts_ns;
-    if (out.books.size() != in.books.size()) {
-        out.books.resize(in.books.size());
-    }
-    for (std::size_t i = 0; i < in.books.size(); ++i) {
+    out.n_books = static_cast<std::uint32_t>(in.books.size());
+    for (std::uint32_t i = 0; i < out.n_books; ++i) {
         const auto& book = in.books[i];
         BusBookUpdate& u = out.books[i];
         u.component_id = book.component_id;
@@ -170,17 +185,12 @@ void ToBusTickInto(const population::TickView& in, BusTick& out,
         AppendLevelsInto(u.bids, book.bids, ts);
         AppendLevelsInto(u.asks, book.asks, ts);
     }
-    if (out.slots.size() != in.slots.size()) {
-        out.slots.resize(in.slots.size());
-    }
     for (std::size_t si = 0; si < in.slots.size(); ++si) {
         const auto& slot = in.slots[si];
         BusSlotTick& st = out.slots[si];
         st.slot_id = slot.slot_id;
-        if (st.books.size() != slot.books.size()) {
-            st.books.resize(slot.books.size());
-        }
-        for (std::size_t bi = 0; bi < slot.books.size(); ++bi) {
+        st.n_books = static_cast<std::uint32_t>(slot.books.size());
+        for (std::uint32_t bi = 0; bi < st.n_books; ++bi) {
             const auto& book = slot.books[bi];
             BusBookUpdate& u = st.books[bi];
             u.component_id = book.component_id;
@@ -207,12 +217,6 @@ void ToBusTickInto(const population::TickView& in, BusTick& out,
             tr.leaves = trade.leaves;
         }
     }
-}
-
-BusTick ToBusTick(const population::TickView& in, const TickSizeByComponent& tick_sizes) {
-    BusTick out;
-    ToBusTickInto(in, out, tick_sizes);
-    return out;
 }
 
 }  // namespace transport

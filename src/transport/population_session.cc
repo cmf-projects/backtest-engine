@@ -166,6 +166,7 @@ PopulationSession::Step PopulationSession::OnOpen(const std::vector<std::uint8_t
         return FinishFatal(ErrorCode::Internal, msg, false);
     }
 
+    PrepareTickStorage(tick_buf_, open.slots.size(), open.components.size());
     const auto n_slots = static_cast<std::uint32_t>(open.slots.size());
     EncodeBusOpenAckInto(MakeBusOpenOk(cfg_.population_id, n_slots), encode_buf_);
     if (!SendOut(BusMsgType::OpenAck, encode_buf_)) {

@@ -99,9 +99,9 @@ void AppendTrade(std::vector<std::uint8_t>& out, const BusTrade& trade) {
 
 void AppendSlotTick(std::vector<std::uint8_t>& out, const BusSlotTick& slot) {
     AppendU32(out, slot.slot_id);
-    AppendU32(out, static_cast<std::uint32_t>(slot.books.size()));
-    for (const auto& book : slot.books) {
-        AppendBookUpdate(out, book);
+    AppendU32(out, slot.n_books);
+    for (std::uint32_t i = 0; i < slot.n_books; ++i) {
+        AppendBookUpdate(out, slot.books[i]);
     }
     AppendU32(out, static_cast<std::uint32_t>(slot.trades.size()));
     for (const auto& trade : slot.trades) {
@@ -116,6 +116,7 @@ void AppendSlotTick(std::vector<std::uint8_t>& out, const BusSlotTick& slot) {
     if (!ReadU32(p, end, slot.slot_id) || !ReadU32(p, end, n_books)) {
         return false;
     }
+    slot.n_books = n_books;
     ResizeWithPool(slot.books, n_books, scratch.books);
     for (std::uint32_t i = 0; i < n_books; ++i) {
         if (!ReadBookUpdate(p, end, slot.books[i])) {
@@ -246,9 +247,9 @@ bool DecodeBusOpenAck(const std::uint8_t* data, std::size_t size, BusOpenAck& ou
 void EncodeBusTickInto(const BusTick& msg, std::vector<std::uint8_t>& out) {
     out.clear();
     AppendU64(out, msg.pop_ts_ns);
-    AppendU32(out, static_cast<std::uint32_t>(msg.books.size()));
-    for (const auto& book : msg.books) {
-        AppendBookUpdate(out, book);
+    AppendU32(out, msg.n_books);
+    for (std::uint32_t i = 0; i < msg.n_books; ++i) {
+        AppendBookUpdate(out, msg.books[i]);
     }
     AppendU32(out, static_cast<std::uint32_t>(msg.slots.size()));
     for (const auto& slot : msg.slots) {
@@ -270,6 +271,7 @@ bool DecodeBusTick(const std::uint8_t* data, std::size_t size, BusTick& out) {
     if (!ReadU64(p, end, out.pop_ts_ns) || !ReadU32(p, end, n_books)) {
         return false;
     }
+    out.n_books = n_books;
     ResizeWithPool(out.books, n_books, out.decode_scratch.books);
     for (std::uint32_t i = 0; i < n_books; ++i) {
         if (!ReadBookUpdate(p, end, out.books[i])) {

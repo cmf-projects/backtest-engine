@@ -26,8 +26,10 @@ using TickSizeByComponent = std::unordered_map<std::string, double>;
                                                   const TickSizeByComponent& tick_sizes);
 void ToOrderBatchInto(const BusOrderBatch& in, population::OrderBatch& out,
                       const TickSizeByComponent& tick_sizes);
-[[nodiscard]] BusTick ToBusTick(const population::TickView& in,
-                                const TickSizeByComponent& tick_sizes);
+// One-time book storage for `out`: n_slots × n_components, level sides reserved.
+// Later ToBusTickInto writes into that storage and only updates n_books.
+void PrepareTickStorage(BusTick& out, std::size_t n_slots, std::size_t n_components);
+
 void ToBusTickInto(const population::TickView& in, BusTick& out,
                    const TickSizeByComponent& tick_sizes);
 

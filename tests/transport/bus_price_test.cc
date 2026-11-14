@@ -115,6 +115,7 @@ TEST(BusPriceWire, TickAndOrderBatchRoundTrip) {
 
     BusTick tick;
     tick.pop_ts_ns = 7;
+    tick.n_books = 1;
     tick.books.push_back(BusBookUpdate{
         .component_id = "SPOT",
         .kind = BusBookPatchKind::Keyframe,

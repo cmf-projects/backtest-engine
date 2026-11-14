@@ -61,12 +61,22 @@ Population::Population(std::vector<ComponentSpec> components, std::vector<SlotCo
     }
     merge_.emplace(std::move(merged));
 
+    match_bids_scratch_.reserve(kMaxLevelsPerSide);
+    match_asks_scratch_.reserve(kMaxLevelsPerSide);
+    view_scratch_.bids.reserve(kMaxLevelsPerSide);
+    view_scratch_.asks.reserve(kMaxLevelsPerSide);
+    diff_scratch_.bids.reserve(kMaxDiffLevelsPerSide);
+    diff_scratch_.asks.reserve(kMaxDiffLevelsPerSide);
+
     ValidateSlots(slots_);
     for (const SlotConfig& cfg : slots_) {
         slot_send_.emplace(cfg.slot_id, SlotSendState{});
         slot_orders_.emplace(cfg.slot_id, SlotOrders{});
         pending_trades_.emplace(cfg.slot_id, std::vector<Trade>{});
         for (const Component& component : components_) {
+            ComponentSend& send = slot_send_.at(cfg.slot_id).components[component.component_id()];
+            send.last_bids.reserve(kMaxLevelsPerSide);
+            send.last_asks.reserve(kMaxLevelsPerSide);
             slot_impact_.emplace(SlotComponentKey{cfg.slot_id, component.component_id()},
                                  ImpactState{cfg.impact_lambda});
         }
@@ -306,6 +316,15 @@ const TickView& Population::MakeTick() {
 
         SlotSendState& sent = slot_send_.at(cfg.slot_id);
         std::size_t book_n = 0;
+        auto take_patch = [&]() -> SlotBookUpdateView& {
+            if (book_n >= slot_tick.books.size()) {
+                slot_tick.books.resize(book_n + 1);
+                // Born here: keyframe fits in 64, a side diff in 128. Later ticks reuse it.
+                slot_tick.books.back().bids.reserve(kMaxDiffLevelsPerSide);
+                slot_tick.books.back().asks.reserve(kMaxDiffLevelsPerSide);
+            }
+            return slot_tick.books[book_n++];
+        };
         for (const Component& component : components_) {
             if (!component.present()) {
                 continue;
@@ -326,10 +345,7 @@ const TickView& Population::MakeTick() {
             ComponentSend& send = sent.components[component.component_id()];
 
             if (!send.has_sent) {
-                if (book_n >= slot_tick.books.size()) {
-                    slot_tick.books.resize(book_n + 1);
-                }
-                SlotBookUpdateView& patch = slot_tick.books[book_n++];
+                SlotBookUpdateView& patch = take_patch();
                 patch.component_id = component.component_id();
                 patch.kind = BookPatchKind::Keyframe;
                 patch.bids = *view_bids;
@@ -341,10 +357,7 @@ const TickView& Population::MakeTick() {
                 DiffBooksInto(send.last_bids, send.last_asks, *view_bids, *view_asks,
                               component.tick_size(), diff_scratch_);
                 if (!diff_scratch_.empty()) {
-                    if (book_n >= slot_tick.books.size()) {
-                        slot_tick.books.resize(book_n + 1);
-                    }
-                    SlotBookUpdateView& patch = slot_tick.books[book_n++];
+                    SlotBookUpdateView& patch = take_patch();
                     patch.component_id = component.component_id();
                     patch.kind = BookPatchKind::Diff;
                     patch.bids = diff_scratch_.bids;
