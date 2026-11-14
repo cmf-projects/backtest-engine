@@ -70,16 +70,32 @@ FetchContent_MakeAvailable(spdlog)
 find_package(Threads REQUIRED)
 
 # ---------------------------------------------------------------------------
+# Apache Arrow C++ (system package; Feather parts) + nlohmann/json (their sidecars)
+# ---------------------------------------------------------------------------
+find_package(Arrow REQUIRED)
+
+set(CMF_NLOHMANN_JSON_TAG "v3.11.3" CACHE STRING "Release tag of nlohmann/json")
+
+FetchContent_Declare(nlohmann_json
+  URL https://github.com/nlohmann/json/releases/download/${CMF_NLOHMANN_JSON_TAG}/json.tar.xz
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+
+FetchContent_MakeAvailable(nlohmann_json)
+
+# ---------------------------------------------------------------------------
 # Dataset + population core — src/
 # ---------------------------------------------------------------------------
 add_library(dataset_lib
-  src/dataset/jsonl_tape.cc)
+  src/dataset/jsonl_tape.cc
+  src/dataset/feather_tape.cc
+  src/dataset/make_tape.cc)
 add_library(cmf::dataset ALIAS dataset_lib)
 
 target_include_directories(dataset_lib
   PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>")
 target_compile_features(dataset_lib PUBLIC cxx_std_20)
+target_link_libraries(dataset_lib PRIVATE Arrow::arrow_shared nlohmann_json::nlohmann_json)
 
 add_library(population_lib
   src/population/clock.cc
@@ -208,6 +224,15 @@ if(CMF_BUILD_TESTS)
     cmf::transport
     GTest::gtest_main)
   gtest_discover_tests(transport_tests)
+
+  add_executable(dataset_tests
+    tests/dataset/feather_tape_test.cc)
+  target_link_libraries(dataset_tests PRIVATE
+    cmf::dataset
+    GTest::gtest_main)
+  target_compile_definitions(dataset_tests PRIVATE
+    CMF_TESTDATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/testdata")
+  gtest_discover_tests(dataset_tests)
 endif()
 
 if(MSVC)
@@ -221,6 +246,7 @@ if(MSVC)
   if(CMF_BUILD_TESTS)
     target_compile_options(population_tests PRIVATE /W4)
     target_compile_options(transport_tests PRIVATE /W4)
+    target_compile_options(dataset_tests PRIVATE /W4)
   endif()
 else()
   target_compile_options(dataset_lib PRIVATE -Wall -Wextra -Wpedantic)
@@ -233,5 +259,6 @@ else()
   if(CMF_BUILD_TESTS)
     target_compile_options(population_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(transport_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(dataset_tests PRIVATE -Wall -Wextra -Wpedantic)
   endif()
 endif()

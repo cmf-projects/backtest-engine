@@ -8,6 +8,22 @@
 namespace transport {
 namespace {
 
+// Smallest on-wire element. A count is allocated only when the unread bytes can
+// hold that many elements; a hostile u32 must not request gigabytes.
+constexpr std::uint32_t kMaxComponents = 3;
+constexpr std::size_t kMinComponentBytes = 21;   // 5×string + role
+constexpr std::size_t kMinSlotConfigBytes = 24;  // slot + 2×u64 + string
+constexpr std::size_t kMinOrderBytes = 42;       // ids + string + side + price + qty + tif
+constexpr std::size_t kMinCancelBytes = 12;      // slot + client_order_id
+constexpr std::size_t kMinSlotTickBytes = 12;    // slot + n_books + n_trades
+constexpr std::size_t kMinTradeBytes = 45;       // oid + exec + string + price + qty + leaves
+
+[[nodiscard]] bool CountFits(const std::uint8_t* p, const std::uint8_t* end, std::uint32_t n,
+                             std::size_t min_bytes) {
+    const auto remain = static_cast<std::size_t>(end - p);
+    return static_cast<std::size_t>(n) <= remain / min_bytes;
+}
+
 void AppendPrice(std::vector<std::uint8_t>& out, const BusPrice& px) {
     AppendI64(out, px.whole);
     AppendI64(out, px.frac);
@@ -141,6 +157,9 @@ void AppendSlotTick(std::vector<std::uint8_t>& out, const BusSlotTick& slot) {
     if (n_trades == 0) {
         slot.trades.clear();
     } else {
+        if (!CountFits(p, end, n_trades, kMinTradeBytes)) {
+            return false;
+        }
         if (slot.trades.size() != n_trades) {
             slot.trades.resize(n_trades);
         }
@@ -193,6 +212,9 @@ bool DecodeBusOpen(const std::uint8_t* data, std::size_t size, BusOpen& out) {
         !ReadU32(p, end, n_comp)) {
         return false;
     }
+    if (n_comp > kMaxComponents || !CountFits(p, end, n_comp, kMinComponentBytes)) {
+        return false;
+    }
     tmp.components.reserve(n_comp);
     for (std::uint32_t i = 0; i < n_comp; ++i) {
         BusComponent c;
@@ -210,6 +232,9 @@ bool DecodeBusOpen(const std::uint8_t* data, std::size_t size, BusOpen& out) {
         tmp.components.push_back(std::move(c));
     }
     if (!ReadU32(p, end, n_slots)) {
+        return false;
+    }
+    if (!CountFits(p, end, n_slots, kMinSlotConfigBytes)) {
         return false;
     }
     tmp.slots.reserve(n_slots);
@@ -294,6 +319,9 @@ bool DecodeBusTick(const std::uint8_t* data, std::size_t size, BusTick& out) {
     if (!ReadU32(p, end, n_slots)) {
         return false;
     }
+    if (!CountFits(p, end, n_slots, kMinSlotTickBytes)) {
+        return false;
+    }
     // Every strategy is present on every tick, so the slot list never shrinks.
     if (n_slots > out.slots.size()) {
         const std::size_t born = out.slots.size();
@@ -345,6 +373,9 @@ bool DecodeBusOrderBatch(const std::uint8_t* data, std::size_t size, BusOrderBat
     if (!ReadU32(p, end, n_orders)) {
         return false;
     }
+    if (!CountFits(p, end, n_orders, kMinOrderBytes)) {
+        return false;
+    }
     if (out.orders.size() != n_orders) {
         out.orders.resize(n_orders);
     }
@@ -361,6 +392,9 @@ bool DecodeBusOrderBatch(const std::uint8_t* data, std::size_t size, BusOrderBat
         o.tif = static_cast<BusTimeInForce>(*p++);
     }
     if (!ReadU32(p, end, n_cancels)) {
+        return false;
+    }
+    if (!CountFits(p, end, n_cancels, kMinCancelBytes)) {
         return false;
     }
     if (out.cancels.size() != n_cancels) {

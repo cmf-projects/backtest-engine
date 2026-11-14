@@ -1,6 +1,10 @@
 #include "population/types.hpp"
 #include "transport/bus_framing.hpp"
 #include "transport/bus_messages.hpp"
+#include "transport/wire_bytes.hpp"
+
+#include <cstdint>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -314,4 +318,76 @@ TEST(BusFraming, OrderBatchRejectsTruncated) {
     bytes.resize(bytes.size() - 1);
     BusOrderBatch got;
     EXPECT_FALSE(DecodeBusOrderBatch(bytes.data(), bytes.size(), got));
+}
+
+TEST(BusFraming, OrderBatchRejectsImpossibleOrderCount) {
+    const std::uint8_t payload[] = {0xff, 0xff, 0xff, 0xff};
+    BusOrderBatch got;
+    EXPECT_FALSE(DecodeBusOrderBatch(payload, sizeof(payload), got));
+    EXPECT_TRUE(got.orders.empty());
+}
+
+TEST(BusFraming, OrderBatchRejectsImpossibleCancelCount) {
+    std::vector<std::uint8_t> payload;
+    transport::AppendU32(payload, 0);
+    transport::AppendU32(payload, 0xffffffffu);
+    BusOrderBatch got;
+    EXPECT_FALSE(DecodeBusOrderBatch(payload.data(), payload.size(), got));
+    EXPECT_TRUE(got.cancels.empty());
+}
+
+TEST(BusFraming, OpenRejectsImpossibleComponentCount) {
+    std::vector<std::uint8_t> payload;
+    transport::AppendU32(payload, 0);  // empty population_id
+    transport::AppendU32(payload, 0);  // tape_stride
+    transport::AppendU32(payload, 0xffffffffu);
+    BusOpen got;
+    EXPECT_FALSE(DecodeBusOpen(payload.data(), payload.size(), got));
+    EXPECT_TRUE(got.components.empty());
+}
+
+TEST(BusFraming, OpenRejectsMoreThanThreeComponents) {
+    std::vector<std::uint8_t> payload;
+    transport::AppendU32(payload, 0);
+    transport::AppendU32(payload, 0);
+    transport::AppendU32(payload, 4);
+    payload.resize(payload.size() + 4 * 21, 0);  // four minimum components
+    transport::AppendU32(payload, 0);            // n_slots
+    BusOpen got;
+    EXPECT_FALSE(DecodeBusOpen(payload.data(), payload.size(), got));
+}
+
+TEST(BusFraming, OpenRejectsImpossibleSlotCount) {
+    std::vector<std::uint8_t> payload;
+    transport::AppendU32(payload, 0);
+    transport::AppendU32(payload, 0);
+    transport::AppendU32(payload, 0);  // no components
+    transport::AppendU32(payload, 0xffffffffu);
+    BusOpen got;
+    EXPECT_FALSE(DecodeBusOpen(payload.data(), payload.size(), got));
+    EXPECT_TRUE(got.slots.empty());
+}
+
+TEST(BusFraming, TickRejectsImpossibleSlotCount) {
+    std::vector<std::uint8_t> payload;
+    transport::AppendU64(payload, 0);  // pop_ts
+    transport::AppendU32(payload, 0);  // n_books
+    transport::AppendU32(payload, 0xffffffffu);
+    BusTick got;
+    EXPECT_FALSE(DecodeBusTick(payload.data(), payload.size(), got));
+    EXPECT_TRUE(got.slots.empty());
+}
+
+TEST(BusFraming, TickRejectsImpossibleTradeCount) {
+    std::vector<std::uint8_t> payload;
+    transport::AppendU64(payload, 0);
+    transport::AppendU32(payload, 0);  // shared books
+    transport::AppendU32(payload, 1);  // one slot
+    transport::AppendU32(payload, 1);  // slot_id
+    transport::AppendU32(payload, 0);  // slot books
+    transport::AppendU32(payload, 0xffffffffu);
+    BusTick got;
+    EXPECT_FALSE(DecodeBusTick(payload.data(), payload.size(), got));
+    ASSERT_EQ(got.slots.size(), 1u);
+    EXPECT_TRUE(got.slots[0].trades.empty());
 }

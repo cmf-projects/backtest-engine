@@ -11,7 +11,8 @@ glossary: [`docs/GLOSSARY.md`](docs/GLOSSARY.md).
 ## Requirements
 
 - CMake ≥ 3.14, C++20 compiler
-- Network to fetch [toml++](https://github.com/marzer/tomlplusplus) (and GoogleTest if tests on) on first configure
+- Apache Arrow C++ (`pacman -S arrow` / `apt install libarrow-dev`) for Feather datasets
+- Network to fetch [toml++](https://github.com/marzer/tomlplusplus), nlohmann/json (and GoogleTest if tests on) on first configure
 
 ## Quick start
 
@@ -89,7 +90,22 @@ TOML configs for entrypoints live under `options/`:
 
 ## Dataset
 
-Venue reads **converted** snapshot JSONL (one object per line).
+The venue picks the adapter from `dataset_path` (`dataset::MakeTape`):
+
+- `*.jsonl` → converted snapshot JSONL (below);
+- `*.feather` or a directory → Databento **bbo-1m** Feather deliveries
+  (`<day>/<job>/{manifest.json, source-metadata.json, part-*.feather}`).
+  The path can be one part, one day, or the whole `data/` root (days replayed in order,
+  days without the symbol skipped). `sec_code` = Databento `raw_symbol` (e.g. `MGCZ5`);
+  one snapshot per minute with best bid/ask as a single level.
+
+```bash
+# MGC Dec-25 over all days in data/ (MGC tick 0.1, SIL tick 0.005)
+POPULATION_SEC_CODE=MGCZ5 POPULATION_TICK_SIZE=0.1 make population-smoke POPULATION_DATASET=data
+POPULATION_SEC_CODE=SILZ5 POPULATION_TICK_SIZE=0.005 make population-client POPULATION_DATASET=data
+```
+
+Snapshot JSONL (one object per line):
 
 Example row:
 
@@ -114,9 +130,10 @@ options/                 TOML configs per entrypoint
 src/population_venue/    config parse + App::Run
 src/population/          population core
 src/transport/           UDS + SPSC bus + session
-src/dataset/             JSONL → Tape
+src/dataset/             JSONL / Feather (bbo-1m) → Tape
 testdata/population/     sample JSONL for smoke
-scripts/                 mbo_to_snapshots.py
+testdata/dataset/        tiny bbo-1m Feather tree (scripts/gen_feather_fixture.py)
+scripts/                 mbo_to_snapshots.py, gen_feather_fixture.py
 docs/                    CONTEXT (agents), POPULATION_*, GLOSSARY
 ```
 

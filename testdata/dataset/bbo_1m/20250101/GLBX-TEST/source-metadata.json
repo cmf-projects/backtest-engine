@@ -1,0 +1,31 @@
+{
+  "dataset": "GLBX.MDP3",
+  "schema": "bbo-1m",
+  "stype_out": "instrument_id",
+  "mappings": [
+    {
+      "raw_symbol": "MGCZ5",
+      "intervals": [
+        {
+          "symbol": "100"
+        }
+      ]
+    },
+    {
+      "raw_symbol": "SILZ5",
+      "intervals": [
+        {
+          "symbol": "200"
+        }
+      ]
+    },
+    {
+      "raw_symbol": "MGCZ5-MGCG6",
+      "intervals": [
+        {
+          "symbol": "300"
+        }
+      ]
+    }
+  ]
+}

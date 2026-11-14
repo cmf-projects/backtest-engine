@@ -1,0 +1,15 @@
+{
+  "dataset": "GLBX.MDP3",
+  "schema": "bbo-1m",
+  "stype_out": "instrument_id",
+  "mappings": [
+    {
+      "raw_symbol": "SILZ5",
+      "intervals": [
+        {
+          "symbol": "200"
+        }
+      ]
+    }
+  ]
+}
