@@ -24,6 +24,20 @@ std::vector<ComponentSpec> MakeSingleSpec(std::string component_id, double tick_
     return specs;
 }
 
+// Highest id among earlier new-orders of this slot in the batch, and the last id
+// this slot has actually applied. The candidate must be strictly above both.
+[[nodiscard]] std::uint64_t NewOrderFloor(const OrderBatch& batch, std::size_t index,
+                                          std::uint32_t slot_id, std::uint64_t last_accepted) {
+    std::uint64_t floor = last_accepted;
+    for (std::size_t i = 0; i < index; ++i) {
+        const NewOrder& prior = batch.orders[i];
+        if (prior.slot_id == slot_id && prior.client_order_id > floor) {
+            floor = prior.client_order_id;
+        }
+    }
+    return floor;
+}
+
 }  // namespace
 
 const SnapshotEvent& Component::current() const {
@@ -72,8 +86,6 @@ Population::Population(std::vector<ComponentSpec> components, std::vector<SlotCo
     for (const SlotConfig& cfg : slots_) {
         slot_send_.emplace(cfg.slot_id, SlotSendState{});
         slot_orders_.emplace(cfg.slot_id, SlotOrders{});
-        pending_new_keys_.ReserveSlot(cfg.slot_id);
-        pending_cancel_keys_.ReserveSlot(cfg.slot_id);
         std::vector<Trade> trades;
         trades.reserve(kTradeCapacity);
         pending_trades_.emplace(cfg.slot_id, std::move(trades));
@@ -484,14 +496,23 @@ const OrderBatchResult& Population::Submit(const OrderBatch& batch) {
 
     // All-or-nothing. Cancels see only orders already live from earlier ticks.
     // An id introduced in this same batch is not live yet, so its cancel is an error.
+    // A new id must be strictly above the last applied id of its slot and above
+    // earlier new ids of that slot in this batch. The watermark moves only if
+    // the whole batch applies, so a rejected batch can be resent.
     bool all_ok = true;
-    pending_cancel_keys_.Clear();
+    if (!batch.cancels.empty()) {
+        if (++cancel_stamp_ == 0) {
+            for (auto& entry : slot_orders_) {
+                entry.second.ClearCancelStamps();
+            }
+            cancel_stamp_ = 1;
+        }
+    }
     for (const CancelOrder& cancel : batch.cancels) {
         OrderResult check = ValidateCancel(cancel);
         if (check == OrderResult::Ok) {
-            if (!pending_cancel_keys_.Insert(cancel.slot_id, cancel.client_order_id)) {
-                check = OrderResult::NoSuchOrder;
-            }
+            check = slot_orders_.at(cancel.slot_id)
+                        .NoteCancel(cancel.client_order_id, cancel_stamp_);
         }
         if (check != OrderResult::Ok) {
             all_ok = false;
@@ -499,18 +520,14 @@ const OrderBatchResult& Population::Submit(const OrderBatch& batch) {
         result.cancel_results.push_back(check);
     }
 
-    pending_new_keys_.Clear();
-    for (const NewOrder& order : batch.orders) {
+    for (std::size_t i = 0; i < batch.orders.size(); ++i) {
+        const NewOrder& order = batch.orders[i];
         OrderResult check = ValidateNewOrder(order);
         if (check == OrderResult::Ok) {
-            const bool dup_live =
-                slot_orders_.at(order.slot_id).FindLive(order.client_order_id) != nullptr;
-            const bool dup_batch =
-                pending_new_keys_.Contains(order.slot_id, order.client_order_id);
-            if (dup_live || dup_batch) {
+            const std::uint64_t floor = NewOrderFloor(
+                batch, i, order.slot_id, slot_orders_.at(order.slot_id).last_accepted_oid());
+            if (order.client_order_id <= floor) {
                 check = OrderResult::DuplicateOrderId;
-            } else {
-                (void)pending_new_keys_.Insert(order.slot_id, order.client_order_id);
             }
         }
         if (check != OrderResult::Ok) {
@@ -528,6 +545,7 @@ const OrderBatchResult& Population::Submit(const OrderBatch& batch) {
     }
     for (const NewOrder& order : batch.orders) {
         (void)SubmitOne(order);
+        slot_orders_.at(order.slot_id).NoteAcceptedOid(order.client_order_id);
     }
     return result;
 }

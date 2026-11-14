@@ -61,6 +61,8 @@ struct WorkingOrder {
     TimeInForce tif = TimeInForce::Unknown;
     // Decision at pop_ts → matchable at pop_ts + slot.Δ (TZ §5.4).
     std::uint64_t effective_ts_ns = 0;
+    // Submit stamp. A second cancel of this id in the same batch sees the same stamp.
+    std::uint32_t cancel_stamp = 0;
 };
 
 enum class ExecType {

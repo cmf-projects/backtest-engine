@@ -2,7 +2,6 @@
 
 #include "population/book_diff.hpp"
 #include "population/clock.hpp"
-#include "population/dense_oid_set.hpp"
 #include "population/impact.hpp"
 #include "population/merged_tape.hpp"
 #include "population/order.hpp"
@@ -154,8 +153,9 @@ private:
     BookDiffResult diff_scratch_;
     std::vector<Level> match_bids_scratch_;
     std::vector<Level> match_asks_scratch_;
-    DenseOidStampSet pending_new_keys_;
-    DenseOidStampSet pending_cancel_keys_;
+    // Bumped once per Submit that carries cancels. Distinguishes a repeat cancel
+    // inside that batch from a cancel in a later batch.
+    std::uint32_t cancel_stamp_ = 0;
     OrderBatchResult submit_result_;
 };
 

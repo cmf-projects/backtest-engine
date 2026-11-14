@@ -5,6 +5,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -162,4 +164,103 @@ TEST(OrderSubmit, MixedBatchAppliesNothingOnOneBadLine) {
     ASSERT_EQ(failures.size(), 1u);
     EXPECT_EQ(failures[0].client_order_id, 2u);
     EXPECT_EQ(failures[0].code, OrderResult::InvalidQty);
+}
+
+TEST(OrderSubmit, HugeClientOrderIdIsAccepted) {
+    Population pop = MakePop();
+    pop.Start();
+    OrderBatch batch;
+    batch.orders.push_back(Buy(50'000'000, 100.0, 1));
+    EXPECT_EQ(pop.Submit(batch).order_results[0], OrderResult::Ok);
+    ASSERT_EQ(pop.SlotBook(1)->LiveCount(), 1u);
+    EXPECT_EQ(pop.SlotBook(1)->orders()[0].client_order_id, 50'000'000u);
+
+    Population pop_max = MakePop();
+    pop_max.Start();
+    OrderBatch huge;
+    huge.orders.push_back(Buy(std::numeric_limits<std::uint64_t>::max(), 100.0, 1));
+    EXPECT_EQ(pop_max.Submit(huge).order_results[0], OrderResult::Ok);
+    EXPECT_EQ(pop_max.SlotBook(1)->LiveCount(), 1u);
+}
+
+TEST(OrderSubmit, ReuseAfterCancelIsRejected) {
+    Population pop = MakePop();
+    pop.Start();
+
+    OrderBatch first;
+    first.orders.push_back(Buy(1, 100.0, 1));
+    EXPECT_EQ(pop.Submit(first).order_results[0], OrderResult::Ok);
+
+    OrderBatch cancel;
+    cancel.cancels.push_back(CancelOrder{.slot_id = 1, .client_order_id = 1});
+    EXPECT_EQ(pop.Submit(cancel).cancel_results[0], OrderResult::Ok);
+    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 0u);
+
+    OrderBatch again;
+    again.orders.push_back(Buy(1, 100.0, 1));
+    EXPECT_EQ(pop.Submit(again).order_results[0], OrderResult::DuplicateOrderId);
+    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 0u);
+}
+
+TEST(OrderSubmit, ReuseAfterFillIsRejected) {
+    Population pop = MakePop();
+    pop.Start();
+    (void)pop.MakeTick();
+
+    OrderBatch batch;
+    batch.orders.push_back(Buy(11, 101.0, 1));
+    EXPECT_EQ(pop.Submit(batch).order_results[0], OrderResult::Ok);
+
+    ASSERT_TRUE(pop.Advance());
+    const auto tick = pop.MakeTick();
+    ASSERT_EQ(tick.slots[0].trades.size(), 1u);
+    EXPECT_EQ(tick.slots[0].trades[0].leaves, 0u);
+    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 0u);
+
+    OrderBatch again;
+    again.orders.push_back(Buy(11, 101.0, 1));
+    EXPECT_EQ(pop.Submit(again).order_results[0], OrderResult::DuplicateOrderId);
+}
+
+TEST(OrderSubmit, DecreasingIdsInBatchRejected) {
+    Population pop = MakePop();
+    pop.Start();
+
+    OrderBatch batch;
+    batch.orders.push_back(Buy(2, 100.0, 1));
+    batch.orders.push_back(Buy(1, 100.0, 1));
+    const auto result = pop.Submit(batch);
+    ASSERT_EQ(result.order_results.size(), 2u);
+    EXPECT_EQ(result.order_results[0], OrderResult::Ok);
+    EXPECT_EQ(result.order_results[1], OrderResult::DuplicateOrderId);
+    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 0u);
+
+    // Rejected batch does not move the watermark, so id 1 can still be sent.
+    OrderBatch later;
+    later.orders.push_back(Buy(1, 100.0, 1));
+    EXPECT_EQ(pop.Submit(later).order_results[0], OrderResult::Ok);
+    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 1u);
+}
+
+TEST(OrderSubmit, DuplicateCancelInBatchIsRejected) {
+    Population pop = MakePop();
+    pop.Start();
+
+    OrderBatch first;
+    first.orders.push_back(Buy(4, 100.0, 1));
+    EXPECT_EQ(pop.Submit(first).order_results[0], OrderResult::Ok);
+
+    OrderBatch twice;
+    twice.cancels.push_back(CancelOrder{.slot_id = 1, .client_order_id = 4});
+    twice.cancels.push_back(CancelOrder{.slot_id = 1, .client_order_id = 4});
+    const auto result = pop.Submit(twice);
+    ASSERT_EQ(result.cancel_results.size(), 2u);
+    EXPECT_EQ(result.cancel_results[0], OrderResult::Ok);
+    EXPECT_EQ(result.cancel_results[1], OrderResult::NoSuchOrder);
+    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 1u);
+
+    OrderBatch once;
+    once.cancels.push_back(CancelOrder{.slot_id = 1, .client_order_id = 4});
+    EXPECT_EQ(pop.Submit(once).cancel_results[0], OrderResult::Ok);
+    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 0u);
 }

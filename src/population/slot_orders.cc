@@ -15,6 +15,31 @@ OrderResult SlotOrders::Accept(WorkingOrder order) {
     return OrderResult::Ok;
 }
 
+void SlotOrders::NoteAcceptedOid(std::uint64_t client_order_id) noexcept {
+    if (client_order_id > last_accepted_oid_) {
+        last_accepted_oid_ = client_order_id;
+    }
+}
+
+OrderResult SlotOrders::NoteCancel(std::uint64_t client_order_id, std::uint32_t stamp) {
+    for (WorkingOrder& order : orders_) {
+        if (order.client_order_id == client_order_id && order.leaves > 0) {
+            if (order.cancel_stamp == stamp) {
+                return OrderResult::NoSuchOrder;
+            }
+            order.cancel_stamp = stamp;
+            return OrderResult::Ok;
+        }
+    }
+    return OrderResult::NoSuchOrder;
+}
+
+void SlotOrders::ClearCancelStamps() noexcept {
+    for (WorkingOrder& order : orders_) {
+        order.cancel_stamp = 0;
+    }
+}
+
 OrderResult SlotOrders::Cancel(std::uint64_t client_order_id) {
     for (WorkingOrder& order : orders_) {
         if (order.client_order_id == client_order_id && order.leaves > 0) {
