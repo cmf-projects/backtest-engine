@@ -270,9 +270,6 @@ void Population::MatchDueIfNeeded() {
     for (const SlotConfig& cfg : slots_) {
         auto& pending = pending_trades_[cfg.slot_id];
         pending.clear();
-        if (pending.capacity() < 16) {
-            pending.reserve(16);
-        }
         for (const Component& component : components_) {
             if (!component.present()) {
                 continue;
