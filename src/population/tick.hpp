@@ -14,7 +14,8 @@ namespace population {
 // Cadence:
 // - `Tick.books` (shared) unused in P0 with per-slot md_lag.
 // - Each slot: Keyframe on first send; else Diff of file view at
-//   pop_ts - md_lag vs that slot's last sent book.
+//   pop_ts - md_lag vs that slot's last sent book. A side longer than
+//   64 rows is sent as a Keyframe of the full view instead.
 
 enum class BookPatchKind {
     Keyframe,

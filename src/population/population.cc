@@ -336,7 +336,7 @@ const TickView& Population::MakeTick() {
         auto take_patch = [&]() -> SlotBookUpdateView& {
             if (book_n >= slot_tick.books.size()) {
                 slot_tick.books.resize(book_n + 1);
-                // Born here: keyframe fits in 64, a side diff in 128. Later ticks reuse it.
+                // Born here: a sent side is at most one book. Later ticks reuse it.
                 slot_tick.books.back().bids.reserve(kMaxDiffLevelsPerSide);
                 slot_tick.books.back().asks.reserve(kMaxDiffLevelsPerSide);
             }
@@ -376,9 +376,18 @@ const TickView& Population::MakeTick() {
                 if (!diff_scratch_.empty()) {
                     SlotBookUpdateView& patch = take_patch();
                     patch.component_id = component.component_id();
-                    patch.kind = BookPatchKind::Diff;
-                    patch.bids = diff_scratch_.bids;
-                    patch.asks = diff_scratch_.asks;
+                    // One kind for both sides. A side longer than the book limit
+                    // is replaced by the full view, not a 128-row diff.
+                    if (diff_scratch_.bids.size() > kMaxLevelsPerSide ||
+                        diff_scratch_.asks.size() > kMaxLevelsPerSide) {
+                        patch.kind = BookPatchKind::Keyframe;
+                        patch.bids = *view_bids;
+                        patch.asks = *view_asks;
+                    } else {
+                        patch.kind = BookPatchKind::Diff;
+                        patch.bids = diff_scratch_.bids;
+                        patch.asks = diff_scratch_.asks;
+                    }
                     send.last_bids = *view_bids;
                     send.last_asks = *view_asks;
                 }

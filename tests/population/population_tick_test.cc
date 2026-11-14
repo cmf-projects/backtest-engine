@@ -1,5 +1,6 @@
 #include "population/order.hpp"
 #include "population/population.hpp"
+#include "population/price_ticks.hpp"
 #include "population/tick.hpp"
 
 #include "fake_tape.hpp"
@@ -11,6 +12,7 @@
 
 using population::BookPatchKind;
 using population::Level;
+using population::TicksToPrice;
 using population::NewOrder;
 using population::OrderBatch;
 using population::OrderResult;
@@ -36,6 +38,16 @@ SnapshotEvent Ev(std::uint64_t seq, std::uint64_t ts_ns, std::vector<Level> bids
 
 std::vector<SlotConfig> OneSlot() {
     return {SlotConfig{.slot_id = 1, .md_lag_ns = 0, .delta_ns = 1, .impact_lambda = 0.0}};
+}
+
+// Bids on the 0.01 grid, top tick first, no two prices shared.
+std::vector<Level> BidLadder(long long top_ticks, int n, std::uint64_t qty) {
+    std::vector<Level> levels;
+    levels.reserve(static_cast<std::size_t>(n));
+    for (int i = 0; i < n; ++i) {
+        levels.push_back(Level{TicksToPrice(top_ticks - i, 0.01), qty});
+    }
+    return levels;
 }
 
 }  // namespace
@@ -155,4 +167,43 @@ TEST(PopulationTick, MdLagAppliesCurrentImpactToOldFileSnap) {
     ASSERT_FALSE(tick.slots[0].books[0].asks.empty());
     EXPECT_DOUBLE_EQ(tick.slots[0].books[0].asks[0].price, 101.0);
     EXPECT_EQ(tick.slots[0].books[0].asks[0].qty, 6u);
+}
+
+TEST(PopulationTick, LongDiffBecomesKeyframeOfFullBook) {
+    // 40 bids shifted completely: 40 new prices + 40 deletions = 80 diff rows.
+    constexpr long long kTop = 10'000;  // price 100.00
+    constexpr int kDepth = 40;
+    const std::vector<Level> asks = {{101.0, 5}};
+    auto tape = std::make_unique<FakeTape>(std::vector<SnapshotEvent>{
+        Ev(1, 100, BidLadder(kTop, kDepth, 10), asks),
+        Ev(2, 200, BidLadder(kTop - kDepth, kDepth, 10), asks),
+        Ev(3, 300, BidLadder(kTop - kDepth, kDepth, 10), asks),
+    });
+
+    Population pop("C1", 0.01, std::move(tape), OneSlot());
+    pop.Start();
+    (void)pop.MakeTick();
+
+    ASSERT_TRUE(pop.Advance());
+    {
+        const auto tick = pop.MakeTick();
+        ASSERT_EQ(tick.slots.size(), 1u);
+        ASSERT_EQ(tick.slots[0].books.size(), 1u);
+        const auto& book = tick.slots[0].books[0];
+        EXPECT_EQ(book.kind, BookPatchKind::Keyframe);
+        ASSERT_EQ(book.bids.size(), static_cast<std::size_t>(kDepth));
+        EXPECT_DOUBLE_EQ(book.bids.front().price, TicksToPrice(kTop - kDepth, 0.01));
+        EXPECT_DOUBLE_EQ(book.bids.back().price, TicksToPrice(kTop - 2 * kDepth + 1, 0.01));
+        EXPECT_EQ(book.bids.front().qty, 10u);
+        ASSERT_EQ(book.asks.size(), 1u);
+        EXPECT_DOUBLE_EQ(book.asks[0].price, 101.0);
+        EXPECT_EQ(book.asks[0].qty, 5u);
+    }
+
+    ASSERT_TRUE(pop.Advance());
+    {
+        const auto tick = pop.MakeTick();
+        ASSERT_EQ(tick.slots.size(), 1u);
+        EXPECT_TRUE(tick.slots[0].books.empty());
+    }
 }

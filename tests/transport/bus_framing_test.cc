@@ -10,6 +10,7 @@
 
 using transport::BusAssetRole;
 using transport::BusBookPatchKind;
+using transport::BusBookLevel;
 using transport::BusBookUpdate;
 using transport::BusCancel;
 using transport::BusComponent;
@@ -142,6 +143,42 @@ TEST(BusFraming, TickRoundTripWithBooksAndTrades) {
     EXPECT_EQ(got.slots[0].trades[0].exec_type, BusExecType::Fill);
     EXPECT_EQ(got.slots[0].trades[0].price, k100_5);
     EXPECT_EQ(got.slots[0].trades[0].qty, 1u);
+}
+
+TEST(BusFraming, KeyframeOfFortyBidsRoundTrips) {
+    // A 40-level shift is sent as a keyframe, not an 80-row diff. The wire
+    // accepts that book (a side longer than 64 would be rejected).
+    BusTick tick;
+    tick.pop_ts_ns = 200;
+    BusSlotTick slot;
+    slot.slot_id = 1;
+    slot.n_books = 1;
+    BusBookUpdate book;
+    book.component_id = "C1";
+    book.kind = BusBookPatchKind::Keyframe;
+    book.bids.reserve(40);
+    for (int i = 0; i < 40; ++i) {
+        const std::int64_t ticks = 9960 - i;  // 99.60, 99.59, ...
+        book.bids.push_back(BusBookLevel{
+            .price = BusPrice{.whole = ticks / 100, .frac = ticks % 100},
+            .qty = 10,
+        });
+    }
+    book.asks.push_back(BusBookLevel{.price = BusPrice{.whole = 101, .frac = 0}, .qty = 5});
+    slot.books.push_back(std::move(book));
+    tick.slots.push_back(std::move(slot));
+
+    const auto bytes = EncodeBusTick(tick);
+    BusTick got;
+    ASSERT_TRUE(DecodeBusTick(bytes.data(), bytes.size(), got));
+    ASSERT_EQ(got.slots.size(), 1u);
+    ASSERT_EQ(got.slots[0].books.size(), 1u);
+    EXPECT_EQ(got.slots[0].books[0].kind, BusBookPatchKind::Keyframe);
+    ASSERT_EQ(got.slots[0].books[0].bids.size(), 40u);
+    EXPECT_EQ(got.slots[0].books[0].bids.front().price, (BusPrice{.whole = 99, .frac = 60}));
+    EXPECT_EQ(got.slots[0].books[0].bids.back().price, (BusPrice{.whole = 99, .frac = 21}));
+    ASSERT_EQ(got.slots[0].books[0].asks.size(), 1u);
+    EXPECT_EQ(got.slots[0].books[0].asks[0].qty, 5u);
 }
 
 TEST(BusFraming, MissingComponentClearsLevelsKeepsCapacity) {

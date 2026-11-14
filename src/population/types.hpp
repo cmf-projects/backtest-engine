@@ -7,8 +7,8 @@
 namespace population {
 
 inline constexpr std::size_t kMaxLevelsPerSide = 64;
-// A side diff lists changed levels plus deletions, so it can be both books.
-inline constexpr std::size_t kMaxDiffLevelsPerSide = kMaxLevelsPerSide * 2;
+// A sent side stays within one book. A longer diff is replaced by a keyframe.
+inline constexpr std::size_t kMaxDiffLevelsPerSide = kMaxLevelsPerSide;
 // Trade buffer reserved once when a slot is born. A longer tick may grow it.
 inline constexpr std::size_t kTradeCapacity = 16;
 
