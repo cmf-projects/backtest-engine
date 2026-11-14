@@ -227,11 +227,17 @@ void CollectBooks(const BusTick& tick, std::vector<const BusBookUpdate*>& out) {
     out.clear();
     if (!tick.slots.empty()) {
         for (const auto& book : tick.slots[0].books) {
+            if (book.bids.empty() && book.asks.empty()) {
+                continue;
+            }
             out.push_back(&book);
         }
     }
     if (out.empty()) {
         for (const auto& book : tick.books) {
+            if (book.bids.empty() && book.asks.empty()) {
+                continue;
+            }
             out.push_back(&book);
         }
     }

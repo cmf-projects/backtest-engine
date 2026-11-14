@@ -129,9 +129,9 @@ struct BusSlotTick {
     std::vector<BusTrade> trades;
 };
 
-// Decode-only spares: keep nested vector capacity when book/slot counts shrink.
+// Decode-only spares for slots and trades. Books stay in their component slot:
+// a component missing from this tick has bids/asks cleared (size 0, capacity kept).
 struct BusDecodeScratch {
-    std::vector<BusBookUpdate> books;
     std::vector<BusSlotTick> slots;
     std::vector<BusTrade> trades;
 };

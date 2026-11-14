@@ -2,6 +2,8 @@
 
 #include "transport/wire_bytes.hpp"
 
+#include <string>
+
 namespace transport {
 namespace {
 
@@ -70,13 +72,42 @@ void AppendBookUpdate(std::vector<std::uint8_t>& out, const BusBookUpdate& book)
     AppendLevels(out, book.asks);
 }
 
-[[nodiscard]] bool ReadBookUpdate(const std::uint8_t*& p, const std::uint8_t* end,
-                                  BusBookUpdate& book) {
-    if (!ReadString(p, end, book.component_id) || p >= end) {
+// Stable slot per component_id. Clear every known side first (size 0, capacity
+// kept). Then write only the ids present in this message; the rest stay empty.
+[[nodiscard]] bool ReadComponentBooks(const std::uint8_t*& p, const std::uint8_t* end,
+                                      std::vector<BusBookUpdate>& books, std::uint32_t& n_books) {
+    std::uint32_t n = 0;
+    if (!ReadU32(p, end, n)) {
         return false;
     }
-    book.kind = static_cast<BusBookPatchKind>(*p++);
-    return ReadLevels(p, end, book.bids) && ReadLevels(p, end, book.asks);
+    for (BusBookUpdate& book : books) {
+        book.bids.clear();
+        book.asks.clear();
+    }
+    for (std::uint32_t i = 0; i < n; ++i) {
+        std::string id;
+        if (!ReadString(p, end, id) || p >= end) {
+            return false;
+        }
+        BusBookUpdate* slot = nullptr;
+        for (BusBookUpdate& book : books) {
+            if (book.component_id == id) {
+                slot = &book;
+                break;
+            }
+        }
+        if (slot == nullptr) {
+            books.emplace_back();
+            slot = &books.back();
+            slot->component_id = std::move(id);
+        }
+        slot->kind = static_cast<BusBookPatchKind>(*p++);
+        if (!ReadLevels(p, end, slot->bids) || !ReadLevels(p, end, slot->asks)) {
+            return false;
+        }
+    }
+    n_books = n;
+    return true;
 }
 
 void AppendTrade(std::vector<std::uint8_t>& out, const BusTrade& trade) {
@@ -111,17 +142,12 @@ void AppendSlotTick(std::vector<std::uint8_t>& out, const BusSlotTick& slot) {
 
 [[nodiscard]] bool ReadSlotTick(const std::uint8_t*& p, const std::uint8_t* end, BusSlotTick& slot,
                                 BusDecodeScratch& scratch) {
-    std::uint32_t n_books = 0;
     std::uint32_t n_trades = 0;
-    if (!ReadU32(p, end, slot.slot_id) || !ReadU32(p, end, n_books)) {
+    if (!ReadU32(p, end, slot.slot_id)) {
         return false;
     }
-    slot.n_books = n_books;
-    ResizeWithPool(slot.books, n_books, scratch.books);
-    for (std::uint32_t i = 0; i < n_books; ++i) {
-        if (!ReadBookUpdate(p, end, slot.books[i])) {
-            return false;
-        }
+    if (!ReadComponentBooks(p, end, slot.books, slot.n_books)) {
+        return false;
     }
     if (!ReadU32(p, end, n_trades)) {
         return false;
@@ -266,17 +292,12 @@ std::vector<std::uint8_t> EncodeBusTick(const BusTick& msg) {
 bool DecodeBusTick(const std::uint8_t* data, std::size_t size, BusTick& out) {
     const std::uint8_t* p = data;
     const std::uint8_t* end = data + size;
-    std::uint32_t n_books = 0;
     std::uint32_t n_slots = 0;
-    if (!ReadU64(p, end, out.pop_ts_ns) || !ReadU32(p, end, n_books)) {
+    if (!ReadU64(p, end, out.pop_ts_ns)) {
         return false;
     }
-    out.n_books = n_books;
-    ResizeWithPool(out.books, n_books, out.decode_scratch.books);
-    for (std::uint32_t i = 0; i < n_books; ++i) {
-        if (!ReadBookUpdate(p, end, out.books[i])) {
-            return false;
-        }
+    if (!ReadComponentBooks(p, end, out.books, out.n_books)) {
+        return false;
     }
     if (!ReadU32(p, end, n_slots)) {
         return false;
