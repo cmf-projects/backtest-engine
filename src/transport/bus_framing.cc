@@ -1,27 +1,12 @@
 #include "transport/bus_framing.hpp"
 
+#include "population/types.hpp"
 #include "transport/wire_bytes.hpp"
 
 #include <string>
 
 namespace transport {
 namespace {
-
-template <typename T>
-void ResizeWithPool(std::vector<T>& v, std::uint32_t n, std::vector<T>& pool) {
-    while (v.size() > n) {
-        pool.push_back(std::move(v.back()));
-        v.pop_back();
-    }
-    while (v.size() < n) {
-        if (!pool.empty()) {
-            v.push_back(std::move(pool.back()));
-            pool.pop_back();
-        } else {
-            v.emplace_back();
-        }
-    }
-}
 
 void AppendPrice(std::vector<std::uint8_t>& out, const BusPrice& px) {
     AppendI64(out, px.whole);
@@ -140,8 +125,7 @@ void AppendSlotTick(std::vector<std::uint8_t>& out, const BusSlotTick& slot) {
     }
 }
 
-[[nodiscard]] bool ReadSlotTick(const std::uint8_t*& p, const std::uint8_t* end, BusSlotTick& slot,
-                                BusDecodeScratch& scratch) {
+[[nodiscard]] bool ReadSlotTick(const std::uint8_t*& p, const std::uint8_t* end, BusSlotTick& slot) {
     std::uint32_t n_trades = 0;
     if (!ReadU32(p, end, slot.slot_id)) {
         return false;
@@ -152,10 +136,18 @@ void AppendSlotTick(std::vector<std::uint8_t>& out, const BusSlotTick& slot) {
     if (!ReadU32(p, end, n_trades)) {
         return false;
     }
-    ResizeWithPool(slot.trades, n_trades, scratch.trades);
-    for (std::uint32_t i = 0; i < n_trades; ++i) {
-        if (!ReadTrade(p, end, slot.trades[i])) {
-            return false;
+    // No trades this tick: size 0, the trade buffer stays. Otherwise overwrite
+    // the live prefix; resize only changes length.
+    if (n_trades == 0) {
+        slot.trades.clear();
+    } else {
+        if (slot.trades.size() != n_trades) {
+            slot.trades.resize(n_trades);
+        }
+        for (std::uint32_t i = 0; i < n_trades; ++i) {
+            if (!ReadTrade(p, end, slot.trades[i])) {
+                return false;
+            }
         }
     }
     return true;
@@ -302,9 +294,18 @@ bool DecodeBusTick(const std::uint8_t* data, std::size_t size, BusTick& out) {
     if (!ReadU32(p, end, n_slots)) {
         return false;
     }
-    ResizeWithPool(out.slots, n_slots, out.decode_scratch.slots);
+    // Every strategy is present on every tick, so the slot list never shrinks.
+    if (n_slots > out.slots.size()) {
+        const std::size_t born = out.slots.size();
+        out.slots.resize(n_slots);
+        for (std::size_t i = born; i < out.slots.size(); ++i) {
+            out.slots[i].trades.reserve(population::kTradeCapacity);
+        }
+    } else if (n_slots < out.slots.size()) {
+        return false;
+    }
     for (std::uint32_t i = 0; i < n_slots; ++i) {
-        if (!ReadSlotTick(p, end, out.slots[i], out.decode_scratch)) {
+        if (!ReadSlotTick(p, end, out.slots[i])) {
             return false;
         }
     }

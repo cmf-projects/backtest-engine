@@ -72,7 +72,9 @@ Population::Population(std::vector<ComponentSpec> components, std::vector<SlotCo
     for (const SlotConfig& cfg : slots_) {
         slot_send_.emplace(cfg.slot_id, SlotSendState{});
         slot_orders_.emplace(cfg.slot_id, SlotOrders{});
-        pending_trades_.emplace(cfg.slot_id, std::vector<Trade>{});
+        std::vector<Trade> trades;
+        trades.reserve(kTradeCapacity);
+        pending_trades_.emplace(cfg.slot_id, std::move(trades));
         for (const Component& component : components_) {
             ComponentSend& send = slot_send_.at(cfg.slot_id).components[component.component_id()];
             send.last_bids.reserve(kMaxLevelsPerSide);
@@ -302,7 +304,11 @@ const TickView& Population::MakeTick() {
     tick_scratch_.pop_ts_ns = clock_.pop_ts_ns();
     tick_scratch_.books.clear();
     if (tick_scratch_.slots.size() != slots_.size()) {
+        const std::size_t born = tick_scratch_.slots.size();
         tick_scratch_.slots.resize(slots_.size());
+        for (std::size_t i = born; i < tick_scratch_.slots.size(); ++i) {
+            tick_scratch_.slots[i].trades.reserve(kTradeCapacity);
+        }
     }
     // Shared tick.books unused when md_lag may differ per slot.
 

@@ -1,3 +1,4 @@
+#include "population/types.hpp"
 #include "transport/bus_framing.hpp"
 #include "transport/bus_messages.hpp"
 
@@ -181,6 +182,65 @@ TEST(BusFraming, MissingComponentClearsLevelsKeepsCapacity) {
     EXPECT_TRUE(got.books[1].asks.empty());
     EXPECT_GE(got.books[1].bids.capacity(), 1u);
     EXPECT_EQ(got.books[0].bids.capacity(), spot_cap);
+}
+
+TEST(BusFraming, NoTradesClearsSizeKeepsCapacity) {
+    constexpr BusPrice k100{.whole = 100, .frac = 0};
+
+    auto encode = [](bool with_trade) {
+        BusTick tick;
+        tick.pop_ts_ns = 1;
+        BusSlotTick slot;
+        slot.slot_id = 1;
+        if (with_trade) {
+            slot.trades.push_back(BusTrade{
+                .client_order_id = 7,
+                .exec_type = BusExecType::Fill,
+                .component_id = "SPOT",
+                .price = k100,
+                .qty = 1,
+                .leaves = 0,
+            });
+        }
+        tick.slots.push_back(std::move(slot));
+        return EncodeBusTick(tick);
+    };
+
+    BusTick got;
+    const auto with = encode(true);
+    ASSERT_TRUE(DecodeBusTick(with.data(), with.size(), got));
+    ASSERT_EQ(got.slots.size(), 1u);
+    ASSERT_EQ(got.slots[0].trades.size(), 1u);
+    const std::size_t cap = got.slots[0].trades.capacity();
+    EXPECT_EQ(cap, population::kTradeCapacity);
+
+    const auto none = encode(false);
+    ASSERT_TRUE(DecodeBusTick(none.data(), none.size(), got));
+    ASSERT_EQ(got.slots.size(), 1u);
+    EXPECT_TRUE(got.slots[0].trades.empty());
+    EXPECT_EQ(got.slots[0].trades.capacity(), cap);
+}
+
+TEST(BusFraming, FewerSlotsRejected) {
+    auto encode = [](std::uint32_t n_slots) {
+        BusTick tick;
+        tick.pop_ts_ns = 1;
+        for (std::uint32_t i = 0; i < n_slots; ++i) {
+            BusSlotTick slot;
+            slot.slot_id = i + 1;
+            tick.slots.push_back(std::move(slot));
+        }
+        return EncodeBusTick(tick);
+    };
+
+    BusTick got;
+    const auto two = encode(2);
+    ASSERT_TRUE(DecodeBusTick(two.data(), two.size(), got));
+    ASSERT_EQ(got.slots.size(), 2u);
+
+    const auto one = encode(1);
+    EXPECT_FALSE(DecodeBusTick(one.data(), one.size(), got));
+    EXPECT_EQ(got.slots.size(), 2u);
 }
 
 TEST(BusFraming, OrderBatchRoundTripEmpty) {

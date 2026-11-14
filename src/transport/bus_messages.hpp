@@ -129,20 +129,12 @@ struct BusSlotTick {
     std::vector<BusTrade> trades;
 };
 
-// Decode-only spares for slots and trades. Books stay in their component slot:
-// a component missing from this tick has bids/asks cleared (size 0, capacity kept).
-struct BusDecodeScratch {
-    std::vector<BusSlotTick> slots;
-    std::vector<BusTrade> trades;
-};
-
 struct BusTick {
     std::uint64_t pop_ts_ns = 0;
     // Live prefix of `books`. Storage may be longer so a tick does not resize it.
     std::uint32_t n_books = 0;
     std::vector<BusBookUpdate> books;  // shared seed (often empty with per-slot md_lag)
-    std::vector<BusSlotTick> slots;
-    BusDecodeScratch decode_scratch;  // not on wire; reused across DecodeBusTick calls
+    std::vector<BusSlotTick> slots;    // one entry per strategy; count does not shrink
 };
 
 struct BusOrder {

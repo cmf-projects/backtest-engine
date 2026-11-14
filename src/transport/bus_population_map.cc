@@ -169,6 +169,7 @@ void PrepareTickStorage(BusTick& out, std::size_t n_slots, std::size_t n_compone
         for (BusBookUpdate& book : slot.books) {
             ReserveBookSides(book);
         }
+        slot.trades.reserve(population::kTradeCapacity);
     }
 }
 
