@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <exception>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -256,18 +257,25 @@ FinishSessionStatus PopulationSession::Run() {
         }
 
         Step done;
-        switch (phase_) {
-            case SessionPhase::AwaitOpen:
-                done = OnOpen(recv_buf_);
-                break;
-            case SessionPhase::AwaitOrderOrAdvance:
-                done = (type == BusMsgType::OrderBatch) ? OnOrders(recv_buf_) : OnAdvance(recv_buf_);
-                break;
-            case SessionPhase::AwaitAdvance:
-                done = OnAdvance(recv_buf_);
-                break;
-            case SessionPhase::Finished:
-                return FinishSessionStatus::Failed;
+        try {
+            switch (phase_) {
+                case SessionPhase::AwaitOpen:
+                    done = OnOpen(recv_buf_);
+                    break;
+                case SessionPhase::AwaitOrderOrAdvance:
+                    done = (type == BusMsgType::OrderBatch) ? OnOrders(recv_buf_)
+                                                           : OnAdvance(recv_buf_);
+                    break;
+                case SessionPhase::AwaitAdvance:
+                    done = OnAdvance(recv_buf_);
+                    break;
+                case SessionPhase::Finished:
+                    return FinishSessionStatus::Failed;
+            }
+        } catch (const std::exception& ex) {
+            return FinishFatal(ErrorCode::Internal, ex.what(), false);
+        } catch (...) {
+            return FinishFatal(ErrorCode::Internal, "unknown exception", false);
         }
         if (done.has_value()) {
             return *done;

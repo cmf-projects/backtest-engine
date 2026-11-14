@@ -40,18 +40,39 @@ constexpr int kCreatePollMs = 200;
     return "unknown";
 }
 
+void AbortPopulationSession(transport::UdsConn& conn, transport::QueueRegistry& registry,
+                            const std::string& id, const char* what) {
+    LOG_ERROR("session {} aborted: {}", id, what);
+    try {
+        (void)registry.Destroy(id);
+        (void)conn.WriteFrame(transport::ControlMsgType::SessionEnded,
+                              transport::EncodeSessionEnded(transport::MakeSessionEndedFatal(
+                                  id, transport::ErrorCode::Internal, what)));
+    } catch (const std::exception& ex) {
+        LOG_ERROR("session {} cleanup failed: {}", id, ex.what());
+    } catch (...) {
+        LOG_ERROR("session {} cleanup failed", id);
+    }
+}
+
 void RunPopulationSession(transport::UdsConn& conn, transport::QueueRegistry& registry,
                           std::string population_id, std::uint32_t drain_timeout_ms,
                           std::atomic<bool>* shutdown) {
     const std::string id = population_id;
-    transport::SessionConfig session_cfg;
-    session_cfg.population_id = std::move(population_id);
-    session_cfg.drain_timeout_ms = drain_timeout_ms;
-    session_cfg.shutdown = shutdown;
+    try {
+        transport::SessionConfig session_cfg;
+        session_cfg.population_id = std::move(population_id);
+        session_cfg.drain_timeout_ms = drain_timeout_ms;
+        session_cfg.shutdown = shutdown;
 
-    transport::PopulationSession session(conn, registry, std::move(session_cfg));
-    const auto finished = session.Run();
-    LOG_INFO("session {} done ({})", id, FinishName(finished));
+        transport::PopulationSession session(conn, registry, std::move(session_cfg));
+        const auto finished = session.Run();
+        LOG_INFO("session {} done ({})", id, FinishName(finished));
+    } catch (const std::exception& ex) {
+        AbortPopulationSession(conn, registry, id, ex.what());
+    } catch (...) {
+        AbortPopulationSession(conn, registry, id, "unknown exception");
+    }
 }
 
 // Like ServeCreateQueues, but returns nullopt on timeout so the app can check stop.

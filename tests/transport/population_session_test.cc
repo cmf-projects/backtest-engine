@@ -927,3 +927,85 @@ TEST(PopulationSession, TruncatedOrderBatchIsFatal) {
     EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
     EXPECT_EQ(registry.size(), 0u);
 }
+
+TEST(PopulationSession, DuplicateTimestampOnAdvanceIsFatal) {
+    // Repeated ts_ns throws from the tape on Advance. The session reports it
+    // and ends this population; it must not abort the process.
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
+
+    FinishSessionStatus status = FinishSessionStatus::Failed;
+    SessionEnded ended;
+
+    auto events = std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(2, 200, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(3, 200, {{100.01, 10}}, {{101.0, 5}}),
+    };
+
+    std::thread server([&] {
+        const int raw = listener.AcceptTimeout(5000);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
+            return;
+        }
+        PopulationSession session(conn, registry, MakeCfg("pop-dup", std::move(events)));
+        status = session.Run();
+    });
+
+    std::thread client([&] {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        const auto ack = RequestCreateQueues(conn, CreateQueues{.population_id = "pop-dup"});
+        if (ack.status != AckStatus::Ok) {
+            return;
+        }
+
+        SpscBus out(registry.FindOut(ack.out_queue));
+        SpscBus in(registry.FindIn(ack.in_queue));
+
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(MakeTestOpen("pop-dup", 1)))) {
+            return;
+        }
+
+        BusMsgType type{};
+        std::vector<std::uint8_t> payload;
+        ASSERT_TRUE(RecvMessage(out, type, payload));
+        EXPECT_EQ(type, BusMsgType::OpenAck);
+        BusOpenAck open_ack;
+        ASSERT_TRUE(DecodeBusOpenAck(payload.data(), payload.size(), open_ack));
+        EXPECT_EQ(open_ack.status, AckStatus::Ok);
+
+        ASSERT_TRUE(RecvMessage(out, type, payload));
+        EXPECT_EQ(type, BusMsgType::Tick);
+        BusTick tick;
+        ASSERT_TRUE(DecodeBusTick(payload.data(), payload.size(), tick));
+        EXPECT_EQ(tick.pop_ts_ns, 100u);
+
+        ASSERT_TRUE(in.TrySend(BusMsgType::Advance, EncodeBusAdvance()));
+
+        ASSERT_TRUE(RecvMessage(out, type, payload));
+        EXPECT_EQ(type, BusMsgType::Error);
+        transport::BusError err;
+        ASSERT_TRUE(DecodeBusError(payload.data(), payload.size(), err));
+        EXPECT_FALSE(err.message.empty());
+
+        ASSERT_TRUE(WaitSessionEnded(conn, ended));
+        EXPECT_FALSE(ended.message.empty());
+        (void)in.TrySend(BusMsgType::Close, EncodeBusClose());
+    });
+
+    server.join();
+    client.join();
+
+    EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
+    EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+    EXPECT_EQ(registry.size(), 0u);
+}
