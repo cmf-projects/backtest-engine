@@ -1,6 +1,7 @@
 #include "transport/population_session.hpp"
 
 #include "dataset/make_tape.hpp"
+#include "population/price_ticks.hpp"
 #include "transport/bus_framing.hpp"
 #include "transport/bus_messages.hpp"
 #include "transport/bus_population_map.hpp"
@@ -146,6 +147,9 @@ PopulationSession::Step PopulationSession::OnOpen(const std::vector<std::uint8_t
             double tick_size = 0.0;
             if (!ParseDecimal(component.tick_size, tick_size) || !(tick_size > 0.0)) {
                 throw std::runtime_error("bad tick_size");
+            }
+            if (!population::TickSizeFitsWholeFrac(tick_size)) {
+                throw std::runtime_error("tick_size does not divide 1");
             }
             tick_sizes_[component.component_id] = tick_size;
             auto tape = MakeTape(component);

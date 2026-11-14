@@ -44,6 +44,20 @@ struct WholeFrac {
     return out;
 }
 
+// whole/frac encodes a price as whole + frac * tick_size with frac < ticks-per-unit.
+// That split is exact only when one price unit is an integer number of ticks.
+[[nodiscard]] inline bool TickSizeFitsWholeFrac(double tick_size) {
+    if (!(tick_size > 0.0) || !std::isfinite(tick_size)) {
+        return false;
+    }
+    const long long tpu = PriceToTicks(1.0, tick_size);
+    if (tpu <= 0) {
+        return false;
+    }
+    const double unit = static_cast<double>(tpu) * tick_size;
+    return std::abs(unit - 1.0) <= 1e-9;
+}
+
 [[nodiscard]] inline double WholeFracToPrice(long long whole, long long frac, double tick_size) {
     const long long tpu = PriceToTicks(1.0, tick_size);
     if (tpu <= 0) {

@@ -128,7 +128,85 @@ SessionConfig MakeCfg(std::string population_id, std::vector<SnapshotEvent> even
     return cfg;
 }
 
+void ExpectOpenRejected(const std::string& population_id, BusOpen open) {
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
+
+    FinishSessionStatus status = FinishSessionStatus::Failed;
+    SessionEnded ended;
+    BusOpenAck open_ack;
+
+    std::thread server([&] {
+        const int raw = listener.AcceptTimeout(5000);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
+            return;
+        }
+        PopulationSession session(
+            conn, registry, MakeCfg(population_id, {Ev(1, 1, {{1.0, 1}}, {{2.0, 1}})}));
+        status = session.Run();
+    });
+
+    std::thread client([&] {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        const auto ack = RequestCreateQueues(conn, CreateQueues{.population_id = population_id});
+        if (ack.status != AckStatus::Ok) {
+            return;
+        }
+
+        SpscBus out(registry.FindOut(ack.out_queue));
+        SpscBus in(registry.FindIn(ack.in_queue));
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(open))) {
+            return;
+        }
+
+        BusMsgType type{};
+        std::vector<std::uint8_t> payload;
+        ASSERT_TRUE(RecvMessage(out, type, payload));
+        EXPECT_EQ(type, BusMsgType::OpenAck);
+        ASSERT_TRUE(DecodeBusOpenAck(payload.data(), payload.size(), open_ack));
+        EXPECT_EQ(open_ack.status, AckStatus::Error);
+        EXPECT_FALSE(open_ack.message.empty());
+
+        while (RecvMessage(out, type, payload, std::chrono::milliseconds(50))) {
+            if (type == BusMsgType::Error) {
+                break;
+            }
+        }
+
+        ASSERT_TRUE(WaitSessionEnded(conn, ended));
+        EXPECT_FALSE(ended.message.empty());
+        (void)in.TrySend(BusMsgType::Close, EncodeBusClose());
+    });
+
+    server.join();
+    client.join();
+
+    EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
+    EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+    EXPECT_EQ(open_ack.status, AckStatus::Error);
+    EXPECT_NE(open_ack.message.find("tick_size"), std::string::npos);
+    EXPECT_EQ(registry.size(), 0u);
+}
+
 }  // namespace
+
+TEST(PopulationSession, UnsupportedTickSizeIsFatal) {
+    for (const char* tick_size : {"5", "0.3"}) {
+        const std::string id = std::string("pop-tick-") + (tick_size[0] == '5' ? "5" : "03");
+        BusOpen open = MakeTestOpen(id, 1);
+        open.components[0].tick_size = tick_size;
+        ExpectOpenRejected(id, std::move(open));
+    }
+}
 
 TEST(PopulationSession, OpenTickAdvanceEndWithPopulation) {
     const std::string path = TempSockPath();

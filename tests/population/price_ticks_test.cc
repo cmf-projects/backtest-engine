@@ -7,6 +7,7 @@
 
 using population::PriceToTicks;
 using population::PriceToWholeFrac;
+using population::TickSizeFitsWholeFrac;
 using population::TicksToPrice;
 using population::WholeFracToPrice;
 
@@ -85,4 +86,17 @@ TEST(PriceTicks, RejectsBadTickSize) {
     EXPECT_THROW((void)PriceToTicks(1.0, 0.0), std::invalid_argument);
     EXPECT_THROW((void)PriceToWholeFrac(1.0, -0.01), std::invalid_argument);
     EXPECT_THROW((void)WholeFracToPrice(1, 0, NAN), std::invalid_argument);
+}
+
+TEST(PriceTicks, WholeFracRequiresUnitOfTicks) {
+    EXPECT_TRUE(TickSizeFitsWholeFrac(0.01));
+    EXPECT_TRUE(TickSizeFitsWholeFrac(0.05));
+    EXPECT_TRUE(TickSizeFitsWholeFrac(0.1));
+    EXPECT_TRUE(TickSizeFitsWholeFrac(1.0));
+    EXPECT_TRUE(TickSizeFitsWholeFrac(0.0001));
+    EXPECT_FALSE(TickSizeFitsWholeFrac(2.0));
+    EXPECT_FALSE(TickSizeFitsWholeFrac(5.0));
+    EXPECT_FALSE(TickSizeFitsWholeFrac(0.3));
+    EXPECT_FALSE(TickSizeFitsWholeFrac(0.0));
+    EXPECT_FALSE(TickSizeFitsWholeFrac(-0.01));
 }
