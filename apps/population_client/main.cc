@@ -4,8 +4,10 @@
 //   population_client [uds_path] [dataset_or_dir] [n_pops]
 // dataset_or_dir:
 //   - directory with spot.jsonl + fut.jsonl + option.jsonl (bundle), or
-//   - single JSONL (1-component SPOT).
+//   - anything else is one SPOT component: JSONL, *.feather or a Feather delivery dir.
 // n_pops: concurrent populations on one UDS (default 1). Env CLIENT_POPS overrides.
+// Single component: env POPULATION_SEC_CODE (default SBER; Feather: raw_symbol, e.g. MGCZ5)
+// and POPULATION_TICK_SIZE (default 0.01).
 
 #include "transport/bus_framing.hpp"
 #include "transport/bus_messages.hpp"
@@ -150,6 +152,16 @@ struct EndedHub {
     return ::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
 }
 
+[[nodiscard]] bool IsJsonlBundle(const std::string& path) {
+    struct stat st {};
+    return IsDir(path) && ::stat((path + "/spot.jsonl").c_str(), &st) == 0;
+}
+
+[[nodiscard]] std::string EnvOr(const char* name, const char* fallback) {
+    const char* value = std::getenv(name);
+    return value != nullptr && value[0] != '\0' ? value : fallback;
+}
+
 bool RecvMessage(SpscBus& bus, BusMsgType& type, std::vector<std::uint8_t>& payload,
                  std::chrono::milliseconds timeout = std::chrono::milliseconds(60'000)) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -174,8 +186,8 @@ BusOpen MakeOpenSingle(const std::string& population_id, const std::string& data
         .role = BusAssetRole::Spot,
         .dataset_path = dataset,
         .class_code = "TQBR",
-        .sec_code = "SBER",
-        .tick_size = "0.01",
+        .sec_code = EnvOr("POPULATION_SEC_CODE", "SBER"),
+        .tick_size = EnvOr("POPULATION_TICK_SIZE", "0.01"),
     });
     open.slots.push_back(BusSlotConfig{
         .slot_id = 1,
@@ -468,7 +480,7 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
-    const bool bundle = IsDir(dataset);
+    const bool bundle = IsJsonlBundle(dataset);
     std::fprintf(stderr, "client: uds=%s dataset=%s mode=%s pops=%d\n", uds_path.c_str(),
                  dataset.c_str(), bundle ? "bundle(spot/fut/option)" : "single", n_pops);
 

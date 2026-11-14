@@ -1,5 +1,7 @@
 // Same-process smoke: UDS control + POSIX shm SPSC (client attaches by CreateAck names).
-// Usage: population_smoke [dataset.jsonl] [uds_path]
+// Usage: population_smoke [dataset] [uds_path]
+// dataset: JSONL, *.feather or a Feather delivery dir. Env POPULATION_SEC_CODE (default SBER;
+// Feather: raw_symbol, e.g. MGCZ5) and POPULATION_TICK_SIZE (default 0.01).
 
 #include "transport/bus_framing.hpp"
 #include "transport/bus_messages.hpp"
@@ -67,6 +69,11 @@ bool RecvMessage(SpscBus& bus, BusMsgType& type, std::vector<std::uint8_t>& payl
     return false;
 }
 
+std::string EnvOr(const char* name, const char* fallback) {
+    const char* value = std::getenv(name);
+    return value != nullptr && value[0] != '\0' ? value : fallback;
+}
+
 BusOpen MakeOpen(const std::string& population_id, const std::string& dataset) {
     BusOpen open;
     open.population_id = population_id;
@@ -75,8 +82,8 @@ BusOpen MakeOpen(const std::string& population_id, const std::string& dataset) {
         .role = BusAssetRole::Spot,
         .dataset_path = dataset,
         .class_code = "TQBR",
-        .sec_code = "SBER",
-        .tick_size = "0.01",
+        .sec_code = EnvOr("POPULATION_SEC_CODE", "SBER"),
+        .tick_size = EnvOr("POPULATION_TICK_SIZE", "0.01"),
     });
     open.slots.push_back(BusSlotConfig{
         .slot_id = 1,

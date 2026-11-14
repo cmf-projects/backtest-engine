@@ -1,6 +1,6 @@
 #include "transport/population_session.hpp"
 
-#include "dataset/jsonl_tape.hpp"
+#include "dataset/make_tape.hpp"
 #include "transport/bus_framing.hpp"
 #include "transport/bus_messages.hpp"
 #include "transport/bus_population_map.hpp"
@@ -77,7 +77,7 @@ population::TapePtr PopulationSession::MakeTape(const BusComponent& component) c
     if (cfg_.make_tape) {
         return cfg_.make_tape(component);
     }
-    return dataset::MakeJsonlTape(component.dataset_path, component.sec_code);
+    return dataset::MakeTape(component.dataset_path, component.sec_code);
 }
 
 FinishSessionStatus PopulationSession::FinishOk(ErrorCode reason, std::string message,

@@ -36,7 +36,7 @@ struct SessionConfig {
     std::string population_id;
     std::uint32_t drain_timeout_ms = kDefaultDrainTimeoutMs;
     // Builds a Tape for each Open.components[] row (1…3).
-    // Default (empty): dataset::MakeJsonlTape(path, sec_code).
+    // Default (empty): dataset::MakeTape(path, sec_code) — JSONL or Feather by path.
     std::function<population::TapePtr(const BusComponent&)> make_tape;
     // Optional process stop flag (Ctrl+C). When set, Run() FinishFatal("venue shutdown").
     std::atomic<bool>* shutdown = nullptr;
