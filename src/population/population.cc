@@ -72,6 +72,8 @@ Population::Population(std::vector<ComponentSpec> components, std::vector<SlotCo
     for (const SlotConfig& cfg : slots_) {
         slot_send_.emplace(cfg.slot_id, SlotSendState{});
         slot_orders_.emplace(cfg.slot_id, SlotOrders{});
+        pending_new_keys_.ReserveSlot(cfg.slot_id);
+        pending_cancel_keys_.ReserveSlot(cfg.slot_id);
         std::vector<Trade> trades;
         trades.reserve(kTradeCapacity);
         pending_trades_.emplace(cfg.slot_id, std::move(trades));
@@ -480,9 +482,23 @@ const OrderBatchResult& Population::Submit(const OrderBatch& batch) {
         result.cancel_results.reserve(batch.cancels.size());
     }
 
-    // All-or-nothing: validate the whole batch first (wire → OrdersAck vs Error).
-    // Dense (slot, oid) stamps — O(1) clear via epoch; no hash-node per line.
+    // All-or-nothing. Cancels see only orders already live from earlier ticks.
+    // An id introduced in this same batch is not live yet, so its cancel is an error.
     bool all_ok = true;
+    pending_cancel_keys_.Clear();
+    for (const CancelOrder& cancel : batch.cancels) {
+        OrderResult check = ValidateCancel(cancel);
+        if (check == OrderResult::Ok) {
+            if (!pending_cancel_keys_.Insert(cancel.slot_id, cancel.client_order_id)) {
+                check = OrderResult::NoSuchOrder;
+            }
+        }
+        if (check != OrderResult::Ok) {
+            all_ok = false;
+        }
+        result.cancel_results.push_back(check);
+    }
+
     pending_new_keys_.Clear();
     for (const NewOrder& order : batch.orders) {
         OrderResult check = ValidateNewOrder(order);
@@ -503,34 +519,15 @@ const OrderBatchResult& Population::Submit(const OrderBatch& batch) {
         result.order_results.push_back(check);
     }
 
-    pending_cancel_keys_.Clear();
-    for (const CancelOrder& cancel : batch.cancels) {
-        OrderResult check = ValidateCancel(cancel);
-        if (check == OrderResult::NoSuchOrder &&
-            pending_new_keys_.Contains(cancel.slot_id, cancel.client_order_id)) {
-            // Cancel targets an order introduced earlier in this same batch.
-            check = OrderResult::Ok;
-        }
-        if (check == OrderResult::Ok) {
-            if (!pending_cancel_keys_.Insert(cancel.slot_id, cancel.client_order_id)) {
-                check = OrderResult::NoSuchOrder;
-            }
-        }
-        if (check != OrderResult::Ok) {
-            all_ok = false;
-        }
-        result.cancel_results.push_back(check);
-    }
-
     if (!all_ok) {
         return result;
     }
 
-    for (const NewOrder& order : batch.orders) {
-        (void)SubmitOne(order);
-    }
     for (const CancelOrder& cancel : batch.cancels) {
         (void)CancelOne(cancel);
+    }
+    for (const NewOrder& order : batch.orders) {
+        (void)SubmitOne(order);
     }
     return result;
 }

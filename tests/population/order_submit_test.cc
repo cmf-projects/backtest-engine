@@ -97,6 +97,32 @@ TEST(OrderSubmit, DuplicateAndCancel) {
     EXPECT_EQ(pop.Submit(missing).cancel_results[0], OrderResult::NoSuchOrder);
 }
 
+TEST(OrderSubmit, CancelOfSameBatchOrderIsRejected) {
+    Population pop = MakePop();
+    pop.Start();
+    (void)pop.MakeTick();
+
+    OrderBatch batch;
+    batch.orders.push_back(Buy(7, 100.0, 3));
+    batch.cancels.push_back(CancelOrder{.slot_id = 1, .client_order_id = 7});
+    const auto result = pop.Submit(batch);
+    ASSERT_EQ(result.order_results.size(), 1u);
+    EXPECT_EQ(result.order_results[0], OrderResult::Ok);
+    ASSERT_EQ(result.cancel_results.size(), 1u);
+    EXPECT_EQ(result.cancel_results[0], OrderResult::NoSuchOrder);
+    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 0u);
+
+    OrderBatch again;
+    again.orders.push_back(Buy(7, 100.0, 3));
+    EXPECT_EQ(pop.Submit(again).order_results[0], OrderResult::Ok);
+    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 1u);
+
+    OrderBatch next_tick;
+    next_tick.cancels.push_back(CancelOrder{.slot_id = 1, .client_order_id = 7});
+    EXPECT_EQ(pop.Submit(next_tick).cancel_results[0], OrderResult::Ok);
+    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 0u);
+}
+
 TEST(OrderSubmit, RejectsBadComponentQtyGridSlot) {
     Population pop = MakePop();
     pop.Start();
