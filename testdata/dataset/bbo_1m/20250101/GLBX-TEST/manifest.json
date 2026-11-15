@@ -1,0 +1,15 @@
+{
+  "compression": "lz4",
+  "interval_seconds": 60,
+  "market": "GLBX.MDP3",
+  "parts": [
+    {
+      "filename": "part-00000.feather",
+      "rows": 5
+    }
+  ],
+  "price_scale": 1000000000,
+  "schema_name": "databento_bbo_1m",
+  "schema_version": 1,
+  "status": "complete"
+}

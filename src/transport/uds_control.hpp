@@ -1,0 +1,126 @@
+#pragma once
+
+// Unix-socket control channel: listen / connect / CreateQueues / SessionEnded.
+
+#include "transport/bus_messages.hpp"
+#include "transport/control.hpp"
+#include "transport/queue_registry.hpp"
+#include "transport/uds_framing.hpp"
+
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace transport {
+
+class UdsListener {
+public:
+  UdsListener() = default;
+  ~UdsListener();
+
+  UdsListener(const UdsListener &) = delete;
+  UdsListener &operator=(const UdsListener &) = delete;
+
+  UdsListener(UdsListener &&other) noexcept;
+  UdsListener &operator=(UdsListener &&other) noexcept;
+
+  [[nodiscard]] static UdsListener Bind(std::string path);
+
+  [[nodiscard]] bool valid() const noexcept { return fd_ >= 0; }
+  [[nodiscard]] const std::string &path() const noexcept { return path_; }
+  [[nodiscard]] int fd() const noexcept { return fd_; }
+
+  // poll+accept on O_NONBLOCK listen fd.
+  // Returns accepted fd, -1 on error, -2 on timeout / EAGAIN / EINTR.
+  [[nodiscard]] int AcceptTimeout(int timeout_ms) const;
+
+private:
+  explicit UdsListener(int fd, std::string path);
+
+  int fd_ = -1;
+  std::string path_;
+};
+
+[[nodiscard]] int UdsConnect(const std::string &path);
+
+// Connected UDS with a sticky read buffer (frames may coalesce in one recv).
+// WriteFrame is serialized via write_mu_ so many session threads may share one conn.
+// Non-movable: std::mutex member; pass by reference after construction.
+class UdsConn {
+public:
+  explicit UdsConn(int fd) noexcept;
+  ~UdsConn();
+
+  UdsConn(const UdsConn &) = delete;
+  UdsConn &operator=(const UdsConn &) = delete;
+  UdsConn(UdsConn &&) = delete;
+  UdsConn &operator=(UdsConn &&) = delete;
+
+  [[nodiscard]] bool valid() const noexcept { return fd_ >= 0; }
+  [[nodiscard]] int fd() const noexcept { return fd_; }
+
+  [[nodiscard]] bool WriteFrame(ControlMsgType type,
+                                const std::vector<std::uint8_t> &payload);
+  [[nodiscard]] bool ReadFrame(ParsedFrame &frame);
+  // 1 = ok, 0 = timeout, -1 = error/EOF
+  [[nodiscard]] int
+  ReadFrameDeadline(ParsedFrame &frame,
+                    std::chrono::steady_clock::time_point deadline);
+
+private:
+  int fd_ = -1;
+  std::vector<std::uint8_t> inbuf_;
+  std::mutex write_mu_;
+};
+
+// One CreateQueues read. Eof is a dead socket: no CreateAck is written.
+// Timeout means the deadline passed with no frame. Replied means a CreateAck
+// was written, whether Ok or a reject. A reject leaves the connection open.
+enum class CreateServeStatus : std::uint8_t {
+  Timeout = 0,
+  Eof = 1,
+  Replied = 2,
+};
+
+struct CreateServeResult {
+  CreateServeStatus status = CreateServeStatus::Timeout;
+  CreateAck ack{};
+};
+
+// `deadline == nullopt` blocks until a frame or EOF.
+[[nodiscard]] CreateServeResult ServeCreateQueuesOnce(
+    UdsConn &conn, QueueRegistry &registry,
+    std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt);
+
+// Blocking wrapper. On EOF returns a local reject and writes nothing.
+[[nodiscard]] CreateAck ServeCreateQueues(UdsConn &conn, QueueRegistry &registry);
+[[nodiscard]] CreateAck RequestCreateQueues(UdsConn &conn,
+                                            const CreateQueues &req);
+
+enum class FinishSessionStatus : std::uint8_t {
+  Unspecified = 0,
+  ClosedByClient = 1,
+  TimedOut = 2,
+  Failed = 3,
+};
+
+// Send SessionEnded on UDS, then drain SPSC in until BusClose | timeout, then
+// Destroy. If close_already_seen (engine Close arrived before SessionEnded),
+// destroy immediately after SessionEnded — do not wait for a second Close.
+// When `shutdown` is set, Close is waited at most 3s, then the queues are
+// destroyed without it.
+inline constexpr std::uint32_t kShutdownCloseWaitMs = 3'000;
+
+[[nodiscard]] FinishSessionStatus
+FinishSession(UdsConn &conn, QueueRegistry &registry, const SessionEnded &ended,
+              std::uint32_t drain_timeout_ms = kDefaultDrainTimeoutMs,
+              bool close_already_seen = false,
+              std::atomic<bool> *shutdown = nullptr);
+
+[[nodiscard]] bool WaitSessionEnded(UdsConn &conn, SessionEnded &out);
+
+} // namespace transport

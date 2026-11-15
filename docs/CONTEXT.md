@@ -1,95 +1,81 @@
-# CMF venue integration
+# Population venue — agent context
 
-We implement a **Venue** that a **Trading Engine** connects to over two TCP channels.
-The Venue reads a local **Dataset** and publishes market data; the Engine’s **Strategy**
-sends orders and receives fills.
+Orientation for agents working in this repo. **Semantics** → [`POPULATION_TZ.md`](POPULATION_TZ.md).  
+**What to code next** → [`POPULATION_IMPL.md`](POPULATION_IMPL.md).  
+**Terms** → [`GLOSSARY.md`](GLOSSARY.md). Architecture draft: [`POPULATION_PLAN.md`](POPULATION_PLAN.md).
 
-## Language
+CMF TCP (`backtest` / `cmf_driver` / two TCP ports) is **gone**. Only the population UDS path remains.
 
-### Roles
+---
 
-**Venue**:
-The exchange simulator we write (`src/venue/` → binary `backtest`). It owns the book,
-matching, and the dataset file. Protocol transport lives in `include/cmf/cmf_driver.hpp`.
-_Avoid_: backtest (as a separate component), engine, strategy
+## Roles
 
-**Trading Engine**:
-The external process that dials into the Venue. It contains strategy logic and is
-not part of this repository. For local tests we use `scripts/simple_strategy.py` as a
-stand-in.
-_Avoid_: venue, backtest binary
+**Venue** — this repo. Binary `population_venue`: listens on a Unix domain socket, owns datasets, `Population` matching/impact, SPSC pairs, `SessionEnded`.  
+_Avoid_: calling it “engine”, “strategy”, or the old `backtest` binary.
 
-**Strategy**:
-Decision logic that lives inside the Trading Engine (or the Python stand-in). It
-observes the book and submits orders.
-_Avoid_: venue, matcher
+**Trading Engine** — external process (not in this repo). One long-lived UDS to the venue; `CreateQueues` per population; tick protocol on that pop’s SPSC pair.  
+_Avoid_: “venue”.
 
-### Channels (TCP)
+**Strategy / genome** — lives inside the Trading Engine. Sees Tick views; submits OrderBatch; does not own the file book.
 
-**Feed channel**:
-Venue → Engine only. Carries book snapshots (`S`), increments (`I`), horizons (`H`), and end (`E`).
-First update per instrument is `S`; later diffs go as `I` (absolute qty, `0` removes a level).
-_Avoid_: “dataset input”, “orders”
+---
 
-**Order channel**:
-Bidirectional. Engine → Venue: `HELLO`, `N`, `C`, `TIME`, `BYE`. Venue → Engine:
-`K`, `A`/`R`/`F`/`X`/`Y`, `H`, `E`.
-_Avoid_: feed
-
-### Data
-
-**Dataset**:
-A file on disk that only the Venue reads (raw Databento MBO zip, or converted
-snapshot `.jsonl`). The Engine never opens it.
-_Avoid_: feed channel, “data over TCP”
-
-**MarketEvent**:
-One book snapshot ready to publish: sequence, logical time, bid/ask levels.
-_Avoid_: MBO message, raw Databento record
-
-**MBO**:
-Databento market-by-order records (`A`/`M`/`C`/`R`…). Converted offline into
-`MarketEvent` snapshots by `scripts/mbo_to_snapshots.py`.
-_Avoid_: feed channel message `S`
-
-### Time
-
-**Logical time**:
-Nanosecond simulation clock carried on messages (`ts`, `ts_seen`, `TIME`).
-_Avoid_: wall clock
-
-**Lookahead (Δ)**:
-Declared order latency from `HELLO`. The Venue must stay strictly below
-`EngineTime + Δ`.
-
-## Who sends what
+## Transport (canonical)
 
 ```
-Dataset file ──read──► Venue ──Feed TCP (S)──► Engine / Strategy
-                         ▲                         │
-                         └──── Order TCP (N/C) ─────┘
-                         ─── Order TCP (A/F) ───────►
+Engine ──UDS──► Venue          CreateQueues / CreateAck / SessionEnded
+Engine ◄─SPSC out── Venue      OpenAck, Tick, OrdersAck, End, Error, …
+Engine ──SPSC in──► Venue      Open, OrderBatch, Advance, Close
 ```
 
-## Layout (Pitchfork-style)
+- One UDS connection → many populations (each Create → thread + own SPSC pair).
+- Hot path is SPSC; UDS is control + lifecycle only.
+- Wire = binary framing in `src/transport/` (no protobuf/gRPC).
+
+Pull model: venue advances `pop_ts` only on Engine **Advance**.
+
+---
+
+## Layout
 
 ```
-include/cmf/          public protocol driver
-src/config/           TOML load (private)
-src/venue/            venue logic (private)
-apps/backtest/        entrypoint + venue `config.toml` → binary `backtest`
-scripts/              offline converters + strategy stand-in (`strategy.toml`)
-docs/                 TASK, CONTEXT
+apps/population_venue/      main → LoadConfig + App::Run
+apps/population_smoke/      same-process UDS + shm attach Open→Tick→Advance→End
+apps/population_client/     external Engine: take best bid/ask over shm SPSC
+options/                    TOML per entrypoint (e.g. population_venue.toml)
+src/population_venue/       config/ + app/ + shutdown/ + log/ (spdlog plain|json)
+src/transport/              UDS, shm SPSC (QueueRegistry), bus, PopulationSession
+src/population/             core (1…3 components via MergedTape)
+src/dataset/                JSONL / Feather (Databento bbo-1m, Arrow C++) → Tape; MakeTape picks by path
+testdata/population/        smoke JSONL
+scripts/mbo_to_snapshots.py offline MBO → snapshot JSONL
+docs/                       TZ, IMPL, PLAN, GLOSSARY, this file
+third_party/ipc.h           unused reference SPMC (own SPSC already)
 ```
 
-## Work sequence (agreed)
+Configs: `options/*.toml` per entrypoint (default `options/population_venue.toml`).  
+Override via `CONFIG` / `POPULATION_UDS` / `POPULATION_DRAIN_MS`.
 
-1. **Dataset source** — Venue reads converted `.jsonl` (`JsonlFeed`) ✅
-2. **Instrument + tick** — from venue `apps/backtest/config.toml` ✅
-   Strategy stand-in has its own `scripts/strategy.toml` (host/ports/HELLO/qty/tif).
-3. **Matching**
-   - ✅ step 1: partial fill vs touch volume (`min(leaves, level.qty)`)
-   - ✅ step 2: walk deeper opposite levels in one `MatchOne` while price crosses
-   - ✅ step 3: TIF — DAY rests leftover; IOC matches then `X` leftover; FOK all-or-nothing (`R` if short)
+---
 
-Offline helper: convert MBO zip → `.jsonl` via `scripts/mbo_to_snapshots.py`.
+## Invariants agents must not break
+
+- Strategies **do not** compete for liquidity or see each other’s orders (per-slot effective book + impact).
+- One **`pop_ts`** per population; timing knobs are **`md_lag`** and **`Δ` only** (`Δ ≥ 1`).
+- Bundle contract: up to **3** components (spot / futures / option); missing component → fewer books, not empty stubs. **Population accepts 1…3** (IMPL 3.2); MakeTick books for late components / match polish → 3.3–3.4.
+- Fatal protocol / bad Open / bad OrderBatch → Error + `SessionEnded{fatal}` + drain Close|timeout (recoverable OrdersAck is later).
+- **`client_order_id` per population:** Engine assigns dense consecutive `uint64` starting at 1, strictly increasing (no gaps). Book key remains `(slot_id, client_order_id)`. Do not assume sparse/random oids when designing venue structures.
+
+---
+
+## Make / verify
+
+```bash
+make build
+make test
+make population-smoke
+make population          # listen; default UDS /tmp/cmf-population.sock
+make population-client   # external take bid/ask (needs venue running)
+```
+
+Next coding milestone: see IMPL (**Explicitly later**: recoverable OrdersAck, quotas, fd-passing). Вехи 3–5 + shm SPSC + client done.

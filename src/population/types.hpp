@@ -1,0 +1,31 @@
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace population {
+
+inline constexpr std::size_t kMaxLevelsPerSide = 64;
+// A sent side stays within one book. A longer diff is replaced by a keyframe.
+inline constexpr std::size_t kMaxDiffLevelsPerSide = kMaxLevelsPerSide;
+// Trade buffer reserved once when a slot is born. A longer tick may grow it.
+inline constexpr std::size_t kTradeCapacity = 16;
+
+struct Level {
+    double price = 0.0;
+    std::uint64_t qty = 0;
+
+    [[nodiscard]] bool empty() const noexcept { return qty == 0; }
+};
+
+// One snapshot record from a component tape (file book, no impact/resting).
+struct SnapshotEvent {
+    std::uint64_t seq = 0;
+    std::uint64_t ts_ns = 0;
+    std::string symbol;
+    std::vector<Level> bids;
+    std::vector<Level> asks;
+};
+
+}  // namespace population

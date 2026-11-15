@@ -1,3 +1,6 @@
+# Generated load tapes (scripts/gen_noise_tapes.py)
+testdata/population/noise/
+
 # Build
 build/
 cmake-build-*/
@@ -20,3 +23,6 @@ compile_commands.json
 .DS_Store
 .cache/
 data/
+testdata/population/noise/
+.tools/
+heaptrack*

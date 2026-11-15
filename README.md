@@ -1,56 +1,111 @@
-# backtest-engine — CMF venue
+# backtest-engine — population venue
 
-Local exchange simulator (**venue**) that reads a market-data dataset and speaks the
-CMF TCP protocol. A trading engine (or the Python stand-in) connects on two ports:
-feed (book) and orders.
+UDS + SPSC population venue: Engine creates populations over a Unix socket; each
+run gets an out/in queue pair and a `PopulationSession` tick loop.
 
-Protocol / assignment text: [`docs/TASK.md`](docs/TASK.md).  
-Domain terms and layout: [`docs/CONTEXT.md`](docs/CONTEXT.md).  
-Protocol PDF: [`files/`](files/).
+Agent orientation: [`docs/CONTEXT.md`](docs/CONTEXT.md).  
+Domain: [`docs/POPULATION_TZ.md`](docs/POPULATION_TZ.md),  
+plan: [`docs/POPULATION_IMPL.md`](docs/POPULATION_IMPL.md),  
+glossary: [`docs/GLOSSARY.md`](docs/GLOSSARY.md).
 
 ## Requirements
 
 - CMake ≥ 3.14, C++20 compiler
-- Python 3.11+ (strategy stand-in uses `tomllib`)
-- Network to fetch [asio](https://github.com/chriskohlhoff/asio) and [toml++](https://github.com/marzer/tomlplusplus) on first configure
+- Apache Arrow C++ (`pacman -S arrow` / `apt install libarrow-dev`) for Feather datasets
+- Network to fetch [toml++](https://github.com/marzer/tomlplusplus), nlohmann/json (and GoogleTest if tests on) on first configure
 
 ## Quick start
 
 ```bash
-make build          # cmake + compile → build/backtest
-make run            # start venue, then Python strategy; wait for both
+make build
+make test
+make population-smoke    # same-process: Create → shm attach → Open → Tick → Advance → End
+make population          # venue listen (default UDS /tmp/cmf-population.sock)
+make population-client   # external Engine: take best bid/ask over shm SPSC
 ```
 
-Expected smoke: strategy sends a few sells, venue answers `A`/`F`, both sides send `E`.
+### Run venue + client
 
-Separate processes:
+**Smoke (recommended first check)** — one process, shm SPSC attach by CreateAck names:
 
 ```bash
-make venue          # CONFIG=apps/backtest/config.toml ./build/backtest
-make strategy       # python3 scripts/simple_strategy.py --config scripts/strategy.toml
+make population-smoke
+# optional: POPULATION_DATASET=path/to.jsonl POPULATION_UDS=/tmp/my.sock make population-smoke
 ```
 
-Override configs:
+Uses `testdata/population/smoke.jsonl` by default. Prints ticks and exits 0 on success.
+
+**Cross-process** — venue + take-bid/ask client (two terminals, repo cwd so dataset path resolves):
 
 ```bash
-make venue VENUE_CONFIG=/path/to/venue.toml
-make strategy STRATEGY_CONFIG=/path/to/strategy.toml
-# or:
-CONFIG=/path/to/venue.toml ./build/backtest
+# terminal 1
+make population
+# terminal 2
+make population-client
+# or: ./build/population_client /tmp/cmf-population.sock testdata/population/smoke.jsonl
 ```
+
+Default socket: `/tmp/cmf-population.sock` (override `POPULATION_UDS` or toml `uds_path`).  
+Engine flow: connect UDS → `CreateQueues` → mmap shm names from `CreateAck` → SPSC
+`Open` / `Tick` / `OrderBatch` / `Advance` / `Close`.  
+`dataset_path` in Open is opened **by the venue** (path must exist on the venue host).
+
+**Noise bundle (spot / fut / option):** generate white-noise tapes, then point the client at the directory:
+
+```bash
+make population-noise                          # → testdata/population/noise/{spot,fut,option}.jsonl
+# optional: POPULATION_NOISE_N=10000 make population-noise
+make clean && make build CMF_LOG_LEVEL=trace   # venue TRACE for submit/fill
+# terminal 1
+make population
+# terminal 2
+POPULATION_DATASET=testdata/population/noise make population-client
+# concurrent populations on one UDS:
+POPULATION_DATASET=testdata/population/noise CLIENT_POPS=3 make population-client
+```
+
+Client summary prints fill sim-delay (`fill_pop_ts - submit_pop_ts`); with `delta_ns=1` and 1 ms tape step that is typically one event step.
+
+**Shutdown:** `SIGINT` / `SIGTERM` (Ctrl+C) stops Accept/Create, finishes live populations with
+`SessionEnded{fatal, "venue shutdown"}`, joins session threads, unlinks the UDS, exits 0.
+
+**Logging (spdlog):** level and format are **compile-time** (lower levels are stripped from
+the binary via `SPDLOG_ACTIVE_LEVEL`). Rebuild to change them:
+
+```bash
+make clean
+make build CMF_LOG_LEVEL=debug CMF_LOG_FORMAT=json   # trace|debug|info|warn|error ; plain|json
+make population
+```
+
+Knobs (runtime): `POPULATION_UDS`, `POPULATION_DRAIN_MS`, `CONFIG=options/population_venue.toml`.
 
 ## Configure
 
+TOML configs for entrypoints live under `options/`:
+
 | File | Who | Main knobs |
 | --- | --- | --- |
-| `apps/backtest/config.toml` | venue | `host`, `feed_port`, `order_port`, `dataset`, `class_code`, `sec_code`, `tick_size` |
-| `scripts/strategy.toml` | stand-in | same host/ports/instrument, plus `lookahead_ns`, `interval_ns`, `qty`, `tif` (0=DAY, 1=IOC, 2=FOK), `max_orders` |
-
-`sec_code` must match the `symbol` field in the JSONL (and stay ≤ 31 characters).
+| `options/population_venue.toml` | `population_venue` | `uds_path`, `drain_timeout_ms` |
 
 ## Dataset
 
-Venue reads **converted** snapshot JSONL (one object per line), not raw MBO over TCP.
+The venue picks the adapter from `dataset_path` (`dataset::MakeTape`):
+
+- `*.jsonl` → converted snapshot JSONL (below);
+- `*.feather` or a directory → Databento **bbo-1m** Feather deliveries
+  (`<day>/<job>/{manifest.json, source-metadata.json, part-*.feather}`).
+  The path can be one part, one day, or the whole `data/` root (days replayed in order,
+  days without the symbol skipped). `sec_code` = Databento `raw_symbol` (e.g. `MGCZ5`);
+  one snapshot per minute with best bid/ask as a single level.
+
+```bash
+# MGC Dec-25 over all days in data/ (MGC tick 0.1, SIL tick 0.005)
+POPULATION_SEC_CODE=MGCZ5 POPULATION_TICK_SIZE=0.1 make population-smoke POPULATION_DATASET=data
+POPULATION_SEC_CODE=SILZ5 POPULATION_TICK_SIZE=0.005 make population-client POPULATION_DATASET=data
+```
+
+Snapshot JSONL (one object per line):
 
 Example row:
 
@@ -66,19 +121,20 @@ python3 scripts/mbo_to_snapshots.py data/dataset/XEUR-….zip \
   --top 2 --max-snapshots 1500
 ```
 
-Point `dataset` in the venue TOML at the resulting `.jsonl`.
-
 ## Layout
 
 ```
-apps/backtest/     entrypoint + venue config → binary backtest
-include/cmf/       protocol driver (cmf_driver.hpp)
-src/venue/         book, matching, JSONL feed
-src/config/        TOML loader
-scripts/           mbo_to_snapshots.py, simple_strategy.py, strategy.toml
-docs/              TASK, CONTEXT
-data/converted/    sample JSONL (gitignored)
-files/             protocol PDF
+apps/population_venue/   UDS population venue → binary population_venue
+apps/population_smoke/   in-process population smoke
+options/                 TOML configs per entrypoint
+src/population_venue/    config parse + App::Run
+src/population/          population core
+src/transport/           UDS + SPSC bus + session
+src/dataset/             JSONL / Feather (bbo-1m) → Tape
+testdata/population/     sample JSONL for smoke
+testdata/dataset/        tiny bbo-1m Feather tree (scripts/gen_feather_fixture.py)
+scripts/                 mbo_to_snapshots.py, gen_feather_fixture.py
+docs/                    CONTEXT (agents), POPULATION_*, GLOSSARY
 ```
 
 ## Make targets
@@ -86,13 +142,8 @@ files/             protocol PDF
 | Target | Action |
 | --- | --- |
 | `make build` | configure + compile |
-| `make venue` | run C++ backtest only |
-| `make strategy` | run Python stand-in only (venue must already listen) |
-| `make run` | venue in background, then strategy |
+| `make population` | run population UDS venue |
+| `make population-smoke` | Open→Tick→Advance→End smoke |
+| `make test` | build + ctest |
 | `make clean` | remove `build/` |
 | `make help` | list targets |
-
-## Notes
-
-- First book update per instrument is `S`; later updates are `I` diffs (fallback to `S` if >64 changes). A real engine may still ignore `I` — see `docs/TASK.md` §5.2.
-- Matching supports DAY / IOC / FOK.

@@ -1,0 +1,1272 @@
+#include "transport/bus_framing.hpp"
+#include "transport/bus_messages.hpp"
+#include "transport/population_session.hpp"
+#include "transport/queue_registry.hpp"
+#include "transport/spsc_bus.hpp"
+#include "transport/uds_control.hpp"
+
+#include "fake_tape.hpp"
+
+#include <gtest/gtest.h>
+
+#include <atomic>
+#include <chrono>
+#include <memory>
+#include <string>
+#include <thread>
+#include <unistd.h>
+#include <vector>
+
+using population::Level;
+using population::SnapshotEvent;
+using population::test::FakeTape;
+using transport::AckStatus;
+using transport::BusAssetRole;
+using transport::BusComponent;
+using transport::BusMsgType;
+using transport::BusOpen;
+using transport::BusOpenAck;
+using transport::BusOrder;
+using transport::BusOrderBatch;
+using transport::BusOrdersAck;
+using transport::BusPrice;
+using transport::BusSide;
+using transport::BusSlotConfig;
+using transport::BusTick;
+using transport::BusTimeInForce;
+using transport::CreateQueues;
+using transport::DecodeBusEnd;
+using transport::DecodeBusError;
+using transport::DecodeBusOpenAck;
+using transport::DecodeBusOrdersAck;
+using transport::DecodeBusTick;
+using transport::EncodeBusAdvance;
+using transport::EncodeBusClose;
+using transport::EncodeBusOpen;
+using transport::EncodeBusOrderBatch;
+using transport::ErrorCode;
+using transport::FinishSessionStatus;
+using transport::PopulationSession;
+using transport::QueueRegistry;
+using transport::RequestCreateQueues;
+using transport::ServeCreateQueues;
+using transport::SessionConfig;
+using transport::SessionEnded;
+using transport::SessionEndStatus;
+using transport::SpscBus;
+using transport::UdsConn;
+using transport::UdsConnect;
+using transport::UdsListener;
+using transport::WaitSessionEnded;
+using transport::BusRecvResult;
+
+namespace {
+
+std::string TempSockPath() {
+    return "/tmp/cmf-uds-session-" +
+           std::to_string(
+               std::chrono::steady_clock::now().time_since_epoch().count()) +
+           "-" + std::to_string(::getpid()) + ".sock";
+}
+
+bool RecvMessage(SpscBus& bus, BusMsgType& type, std::vector<std::uint8_t>& payload,
+                 std::chrono::milliseconds timeout = std::chrono::milliseconds(2000)) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto r = bus.TryRecv(type, payload);
+        if (r == BusRecvResult::Message) {
+            return true;
+        }
+        if (r == BusRecvResult::ProtocolError) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+}
+
+SnapshotEvent Ev(std::uint64_t seq, std::uint64_t ts_ns, std::vector<Level> bids,
+                 std::vector<Level> asks) {
+    SnapshotEvent e;
+    e.seq = seq;
+    e.ts_ns = ts_ns;
+    e.symbol = "SBER";
+    e.bids = std::move(bids);
+    e.asks = std::move(asks);
+    return e;
+}
+
+BusOpen MakeTestOpen(std::string population_id, std::uint32_t n_slots) {
+    BusOpen open;
+    open.population_id = std::move(population_id);
+    open.components.push_back(BusComponent{
+        .component_id = "SPOT",
+        .role = BusAssetRole::Spot,
+        .dataset_path = "/tmp/stub.jsonl",
+        .class_code = "TQBR",
+        .sec_code = "SBER",
+        .tick_size = "0.01",
+    });
+    for (std::uint32_t i = 0; i < n_slots; ++i) {
+        open.slots.push_back(BusSlotConfig{
+            .slot_id = i + 1,
+            .md_lag_ns = 0,
+            .delta_ns = 1,
+            .impact_lambda = "1e-15",
+        });
+    }
+    return open;
+}
+
+SessionConfig MakeCfg(std::string population_id, std::vector<SnapshotEvent> events) {
+    SessionConfig cfg;
+    cfg.population_id = std::move(population_id);
+    cfg.drain_timeout_ms = 2'000;
+    cfg.make_tape = [events = std::move(events)](const BusComponent&) mutable {
+        return std::make_unique<FakeTape>(std::move(events));
+    };
+    return cfg;
+}
+
+void ExpectOpenRejected(const std::string& population_id, BusOpen open,
+                        const std::string& message_part) {
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
+
+    FinishSessionStatus status = FinishSessionStatus::Failed;
+    SessionEnded ended;
+    BusOpenAck open_ack;
+
+    std::thread server([&] {
+        const int raw = listener.AcceptTimeout(5000);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
+            return;
+        }
+        PopulationSession session(
+            conn, registry, MakeCfg(population_id, {Ev(1, 1, {{1.0, 1}}, {{2.0, 1}})}));
+        status = session.Run();
+    });
+
+    std::thread client([&] {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        const auto ack = RequestCreateQueues(conn, CreateQueues{.population_id = population_id});
+        if (ack.status != AckStatus::Ok) {
+            return;
+        }
+
+        SpscBus out(registry.FindOut(ack.out_queue));
+        SpscBus in(registry.FindIn(ack.in_queue));
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(open))) {
+            return;
+        }
+
+        BusMsgType type{};
+        std::vector<std::uint8_t> payload;
+        ASSERT_TRUE(RecvMessage(out, type, payload));
+        EXPECT_EQ(type, BusMsgType::OpenAck);
+        ASSERT_TRUE(DecodeBusOpenAck(payload.data(), payload.size(), open_ack));
+        EXPECT_EQ(open_ack.status, AckStatus::Error);
+        EXPECT_FALSE(open_ack.message.empty());
+
+        while (RecvMessage(out, type, payload, std::chrono::milliseconds(50))) {
+            if (type == BusMsgType::Error) {
+                break;
+            }
+        }
+
+        ASSERT_TRUE(WaitSessionEnded(conn, ended));
+        EXPECT_FALSE(ended.message.empty());
+        (void)in.TrySend(BusMsgType::Close, EncodeBusClose());
+    });
+
+    server.join();
+    client.join();
+
+    EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
+    EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+    EXPECT_EQ(open_ack.status, AckStatus::Error);
+    if (!message_part.empty()) {
+        EXPECT_NE(open_ack.message.find(message_part), std::string::npos);
+    }
+    EXPECT_EQ(registry.size(), 0u);
+}
+
+}  // namespace
+
+TEST(PopulationSession, UnsupportedTickSizeIsFatal) {
+    for (const char* tick_size : {"5", "0.3"}) {
+        const std::string id = std::string("pop-tick-") + (tick_size[0] == '5' ? "5" : "03");
+        BusOpen open = MakeTestOpen(id, 1);
+        open.components[0].tick_size = tick_size;
+        ExpectOpenRejected(id, std::move(open), "tick_size");
+    }
+}
+
+TEST(PopulationSession, BadImpactLambdaIsFatal) {
+    for (const char* lambda : {"abc", "-1", "0"}) {
+        const char* tag = "zero";
+        if (lambda[0] == 'a') {
+            tag = "abc";
+        } else if (lambda[0] == '-') {
+            tag = "neg";
+        }
+        const std::string id = std::string("pop-lam-") + tag;
+        BusOpen open = MakeTestOpen(id, 1);
+        open.slots[0].impact_lambda = lambda;
+        ExpectOpenRejected(id, std::move(open), "impact_lambda");
+    }
+}
+
+TEST(PopulationSession, BadStepNsIsFatal) {
+    BusOpen open = MakeTestOpen("pop-step", 1);
+    open.step_ns = 0;
+    ExpectOpenRejected("pop-step", std::move(open), "step_ns");
+}
+
+TEST(PopulationSession, OpenTickAdvanceEndWithPopulation) {
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
+
+    FinishSessionStatus status = FinishSessionStatus::Failed;
+    SessionEnded ended;
+
+    auto events = std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(2, 200, {{100.0, 8}}, {{101.0, 5}}),
+    };
+
+    std::thread server([&] {
+        const int raw = listener.AcceptTimeout(5000);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
+            return;
+        }
+        PopulationSession session(conn, registry, MakeCfg("pop-n", std::move(events)));
+        status = session.Run();
+    });
+
+    std::thread client([&] {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        const auto ack = RequestCreateQueues(conn, CreateQueues{.population_id = "pop-n"});
+        if (ack.status != AckStatus::Ok) {
+            return;
+        }
+
+        SpscBus out(registry.FindOut(ack.out_queue));
+        SpscBus in(registry.FindIn(ack.in_queue));
+
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(MakeTestOpen("pop-n", 1)))) {
+            return;
+        }
+
+        BusMsgType type{};
+        std::vector<std::uint8_t> payload;
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::OpenAck) {
+            return;
+        }
+        BusOpenAck open_ack;
+        if (!DecodeBusOpenAck(payload.data(), payload.size(), open_ack) ||
+            open_ack.status != AckStatus::Ok || open_ack.n_slots != 1u) {
+            return;
+        }
+
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::Tick) {
+            return;
+        }
+        BusTick tick;
+        if (!DecodeBusTick(payload.data(), payload.size(), tick) || tick.pop_ts_ns != 100u ||
+            tick.slots.size() != 1u || tick.n_books != 1u || tick.books.empty() ||
+            tick.slots[0].n_books != 0u) {
+            return;
+        }
+        EXPECT_EQ(tick.books[0].component_id, "SPOT");
+        EXPECT_FALSE(tick.books[0].bids.empty());
+
+        // Advance to second event → another Tick.
+        if (!in.TrySend(BusMsgType::Advance, EncodeBusAdvance())) {
+            return;
+        }
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::Tick) {
+            return;
+        }
+        if (!DecodeBusTick(payload.data(), payload.size(), tick) || tick.pop_ts_ns != 200u) {
+            return;
+        }
+
+        // Advance past EOF → End.
+        if (!in.TrySend(BusMsgType::Advance, EncodeBusAdvance())) {
+            return;
+        }
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::End ||
+            !DecodeBusEnd(payload.data(), payload.size())) {
+            return;
+        }
+
+        if (!WaitSessionEnded(conn, ended)) {
+            return;
+        }
+        (void)in.TrySend(BusMsgType::Close, EncodeBusClose());
+    });
+
+    server.join();
+    client.join();
+
+    EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
+    EXPECT_EQ(ended.status, SessionEndStatus::Ok);
+    EXPECT_EQ(registry.size(), 0u);
+}
+
+TEST(PopulationSession, SubmitOrderThenAdvance) {
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
+
+    FinishSessionStatus status = FinishSessionStatus::Failed;
+    SessionEnded ended;
+
+    auto events = std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(2, 200, {{100.0, 10}}, {{101.0, 5}}),
+    };
+
+    std::thread server([&] {
+        const int raw = listener.AcceptTimeout(5000);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
+            return;
+        }
+        PopulationSession session(conn, registry, MakeCfg("pop-o", std::move(events)));
+        status = session.Run();
+    });
+
+    std::thread client([&] {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        const auto ack = RequestCreateQueues(conn, CreateQueues{.population_id = "pop-o"});
+        if (ack.status != AckStatus::Ok) {
+            return;
+        }
+
+        SpscBus out(registry.FindOut(ack.out_queue));
+        SpscBus in(registry.FindIn(ack.in_queue));
+
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(MakeTestOpen("pop-o", 1)))) {
+            return;
+        }
+
+        BusMsgType type{};
+        std::vector<std::uint8_t> payload;
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::OpenAck) {
+            return;
+        }
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::Tick) {
+            return;
+        }
+
+        BusOrderBatch batch;
+        batch.orders.push_back(BusOrder{
+            .slot_id = 1,
+            .client_order_id = 7,
+            .component_id = "SPOT",
+            .side = BusSide::Buy,
+            .price = BusPrice{.whole = 100, .frac = 0},
+            .qty = 1,
+            .tif = BusTimeInForce::Day,
+        });
+        if (!in.TrySend(BusMsgType::OrderBatch, EncodeBusOrderBatch(batch))) {
+            return;
+        }
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::OrdersAck) {
+            return;
+        }
+        BusOrdersAck orders_ack;
+        if (!DecodeBusOrdersAck(payload.data(), payload.size(), orders_ack) ||
+            orders_ack.status != AckStatus::Ok) {
+            return;
+        }
+
+        if (!in.TrySend(BusMsgType::Advance, EncodeBusAdvance())) {
+            return;
+        }
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::Tick) {
+            return;
+        }
+
+        if (!in.TrySend(BusMsgType::Advance, EncodeBusAdvance())) {
+            return;
+        }
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::End) {
+            return;
+        }
+
+        if (!WaitSessionEnded(conn, ended)) {
+            return;
+        }
+        (void)in.TrySend(BusMsgType::Close, EncodeBusClose());
+    });
+
+    server.join();
+    client.join();
+
+    EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
+    EXPECT_EQ(ended.status, SessionEndStatus::Ok);
+    EXPECT_EQ(registry.size(), 0u);
+}
+
+TEST(PopulationSession, ClientCloseAfterTick) {
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
+
+    FinishSessionStatus status = FinishSessionStatus::Failed;
+    SessionEnded ended;
+
+    auto events = std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(2, 200, {{100.0, 8}}, {{101.0, 5}}),
+    };
+
+    std::thread server([&] {
+        const int raw = listener.AcceptTimeout(5000);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
+            return;
+        }
+        PopulationSession session(conn, registry, MakeCfg("pop-c", std::move(events)));
+        status = session.Run();
+    });
+
+    std::thread client([&] {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        const auto ack = RequestCreateQueues(conn, CreateQueues{.population_id = "pop-c"});
+        if (ack.status != AckStatus::Ok) {
+            return;
+        }
+
+        SpscBus out(registry.FindOut(ack.out_queue));
+        SpscBus in(registry.FindIn(ack.in_queue));
+
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(MakeTestOpen("pop-c", 1)))) {
+            return;
+        }
+
+        BusMsgType type{};
+        std::vector<std::uint8_t> payload;
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::OpenAck) {
+            return;
+        }
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::Tick) {
+            return;
+        }
+
+        if (!in.TrySend(BusMsgType::Close, EncodeBusClose())) {
+            return;
+        }
+        (void)WaitSessionEnded(conn, ended);
+    });
+
+    server.join();
+    client.join();
+
+    EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
+    EXPECT_EQ(ended.status, SessionEndStatus::Ok);
+    EXPECT_EQ(ended.reason_code, ErrorCode::ClientClose);
+    EXPECT_EQ(registry.size(), 0u);
+}
+
+TEST(PopulationSession, ShutdownFlagFinishesSession) {
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
+
+    FinishSessionStatus status = FinishSessionStatus::Failed;
+    SessionEnded ended;
+    std::atomic<bool> shutdown{false};
+
+    auto events = std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(2, 200, {{100.0, 8}}, {{101.0, 5}}),
+    };
+
+    std::thread server([&] {
+        const int raw = listener.AcceptTimeout(5000);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
+            return;
+        }
+        SessionConfig cfg = MakeCfg("pop-stop", std::move(events));
+        cfg.shutdown = &shutdown;
+        PopulationSession session(conn, registry, std::move(cfg));
+        status = session.Run();
+    });
+
+    std::thread client([&] {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        const auto ack = RequestCreateQueues(conn, CreateQueues{.population_id = "pop-stop"});
+        if (ack.status != AckStatus::Ok) {
+            return;
+        }
+
+        SpscBus out(registry.FindOut(ack.out_queue));
+        SpscBus in(registry.FindIn(ack.in_queue));
+
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(MakeTestOpen("pop-stop", 1)))) {
+            return;
+        }
+
+        BusMsgType type{};
+        std::vector<std::uint8_t> payload;
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::OpenAck) {
+            return;
+        }
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::Tick) {
+            return;
+        }
+
+        // Venue stop while awaiting Order/Advance — should FinishFatal quickly.
+        shutdown.store(true);
+        if (auto* q = registry.FindIn(ack.in_queue)) {
+            q->Notify();
+        }
+        if (auto* q = registry.FindOut(ack.out_queue)) {
+            q->Notify();
+        }
+        if (!WaitSessionEnded(conn, ended)) {
+            return;
+        }
+        (void)in.TrySend(BusMsgType::Close, EncodeBusClose());
+    });
+
+    server.join();
+    client.join();
+
+    EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
+    EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+    EXPECT_EQ(ended.reason_code, ErrorCode::Internal);
+    EXPECT_EQ(ended.message, "venue shutdown");
+    EXPECT_EQ(registry.size(), 0u);
+}
+
+TEST(PopulationSession, ConnStopFinishesWithoutDrain) {
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
+
+    FinishSessionStatus status = FinishSessionStatus::Failed;
+    SessionEnded ended;
+    std::atomic<bool> conn_stop{false};
+
+    auto events = std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(2, 200, {{100.0, 8}}, {{101.0, 5}}),
+    };
+
+    std::thread server([&] {
+        const int raw = listener.AcceptTimeout(5000);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
+            return;
+        }
+        SessionConfig cfg = MakeCfg("pop-disc", std::move(events));
+        cfg.drain_timeout_ms = 5'000;
+        cfg.conn_stop = &conn_stop;
+        PopulationSession session(conn, registry, std::move(cfg));
+        status = session.Run();
+    });
+
+    std::thread client([&] {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        const auto ack = RequestCreateQueues(conn, CreateQueues{.population_id = "pop-disc"});
+        if (ack.status != AckStatus::Ok) {
+            return;
+        }
+
+        SpscBus out(registry.FindOut(ack.out_queue));
+        SpscBus in(registry.FindIn(ack.in_queue));
+
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(MakeTestOpen("pop-disc", 1)))) {
+            return;
+        }
+
+        BusMsgType type{};
+        std::vector<std::uint8_t> payload;
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::OpenAck) {
+            return;
+        }
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::Tick) {
+            return;
+        }
+
+        const auto started = std::chrono::steady_clock::now();
+        conn_stop.store(true);
+        if (auto* q = registry.FindIn(ack.in_queue)) {
+            q->Notify();
+        }
+        if (auto* q = registry.FindOut(ack.out_queue)) {
+            q->Notify();
+        }
+        if (!WaitSessionEnded(conn, ended)) {
+            return;
+        }
+        const auto waited = std::chrono::steady_clock::now() - started;
+        EXPECT_LT(waited, std::chrono::milliseconds(1000));
+        (void)in.TrySend(BusMsgType::Close, EncodeBusClose());
+    });
+
+    server.join();
+    client.join();
+
+    EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
+    EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+    EXPECT_EQ(ended.reason_code, ErrorCode::Internal);
+    EXPECT_EQ(ended.message, "engine disconnected");
+    EXPECT_EQ(registry.size(), 0u);
+}
+
+TEST(PopulationSession, UnexpectedMessageIsFatal) {
+    // Advance before Open → Allowed() rejects → Error + SessionEnded{fatal}.
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
+
+    FinishSessionStatus status = FinishSessionStatus::Failed;
+    SessionEnded ended;
+
+    std::thread server([&] {
+        const int raw = listener.AcceptTimeout(5000);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
+            return;
+        }
+        PopulationSession session(conn, registry,
+                                  MakeCfg("pop-f", {Ev(1, 1, {{1.0, 1}}, {{2.0, 1}})}));
+        status = session.Run();
+    });
+
+    std::thread client([&] {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        const auto ack = RequestCreateQueues(conn, CreateQueues{.population_id = "pop-f"});
+        if (ack.status != AckStatus::Ok) {
+            return;
+        }
+
+        SpscBus out(registry.FindOut(ack.out_queue));
+        SpscBus in(registry.FindIn(ack.in_queue));
+
+        if (!in.TrySend(BusMsgType::Advance, EncodeBusAdvance())) {
+            return;
+        }
+
+        BusMsgType type{};
+        std::vector<std::uint8_t> payload;
+        ASSERT_TRUE(RecvMessage(out, type, payload));
+        EXPECT_EQ(type, BusMsgType::Error);
+        transport::BusError err;
+        ASSERT_TRUE(DecodeBusError(payload.data(), payload.size(), err));
+        EXPECT_FALSE(err.message.empty());
+
+        ASSERT_TRUE(WaitSessionEnded(conn, ended));
+        EXPECT_FALSE(ended.message.empty());
+        (void)in.TrySend(BusMsgType::Close, EncodeBusClose());
+    });
+
+    server.join();
+    client.join();
+
+    EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
+    EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+    EXPECT_EQ(registry.size(), 0u);
+}
+
+TEST(PopulationSession, BadOpenZeroDeltaIsFatal) {
+    // Broken Open (Δ=0) → OpenAck ERROR + SessionEnded{fatal}; not recoverable.
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
+
+    FinishSessionStatus status = FinishSessionStatus::Failed;
+    SessionEnded ended;
+    BusOpenAck open_ack;
+
+    std::thread server([&] {
+        const int raw = listener.AcceptTimeout(5000);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
+            return;
+        }
+        PopulationSession session(conn, registry,
+                                  MakeCfg("pop-bad", {Ev(1, 1, {{1.0, 1}}, {{2.0, 1}})}));
+        status = session.Run();
+    });
+
+    std::thread client([&] {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        const auto ack = RequestCreateQueues(conn, CreateQueues{.population_id = "pop-bad"});
+        if (ack.status != AckStatus::Ok) {
+            return;
+        }
+
+        SpscBus out(registry.FindOut(ack.out_queue));
+        SpscBus in(registry.FindIn(ack.in_queue));
+
+        BusOpen open = MakeTestOpen("pop-bad", 1);
+        open.slots[0].delta_ns = 0;
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(open))) {
+            return;
+        }
+
+        BusMsgType type{};
+        std::vector<std::uint8_t> payload;
+        ASSERT_TRUE(RecvMessage(out, type, payload));
+        EXPECT_EQ(type, BusMsgType::OpenAck);
+        ASSERT_TRUE(DecodeBusOpenAck(payload.data(), payload.size(), open_ack));
+        EXPECT_EQ(open_ack.status, AckStatus::Error);
+        EXPECT_FALSE(open_ack.message.empty());
+
+        // FinishFatal also best-effort Error before SessionEnded.
+        while (RecvMessage(out, type, payload, std::chrono::milliseconds(50))) {
+            if (type == BusMsgType::Error) {
+                break;
+            }
+        }
+
+        ASSERT_TRUE(WaitSessionEnded(conn, ended));
+        EXPECT_FALSE(ended.message.empty());
+        (void)in.TrySend(BusMsgType::Close, EncodeBusClose());
+    });
+
+    server.join();
+    client.join();
+
+    EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
+    EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+    EXPECT_EQ(open_ack.status, AckStatus::Error);
+    EXPECT_EQ(registry.size(), 0u);
+}
+
+TEST(PopulationSession, BadOpenWrongPopulationIdIsFatal) {
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
+
+    FinishSessionStatus status = FinishSessionStatus::Failed;
+    SessionEnded ended;
+    BusOpenAck open_ack;
+
+    std::thread server([&] {
+        const int raw = listener.AcceptTimeout(5000);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
+            return;
+        }
+        PopulationSession session(conn, registry,
+                                  MakeCfg("pop-id", {Ev(1, 1, {{1.0, 1}}, {{2.0, 1}})}));
+        status = session.Run();
+    });
+
+    std::thread client([&] {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        const auto ack = RequestCreateQueues(conn, CreateQueues{.population_id = "pop-id"});
+        if (ack.status != AckStatus::Ok) {
+            return;
+        }
+
+        SpscBus out(registry.FindOut(ack.out_queue));
+        SpscBus in(registry.FindIn(ack.in_queue));
+
+        // Wire Open id does not match the UDS/session population_id.
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(MakeTestOpen("other-pop", 1)))) {
+            return;
+        }
+
+        BusMsgType type{};
+        std::vector<std::uint8_t> payload;
+        ASSERT_TRUE(RecvMessage(out, type, payload));
+        EXPECT_EQ(type, BusMsgType::OpenAck);
+        ASSERT_TRUE(DecodeBusOpenAck(payload.data(), payload.size(), open_ack));
+        EXPECT_EQ(open_ack.status, AckStatus::Error);
+
+        ASSERT_TRUE(WaitSessionEnded(conn, ended));
+        (void)in.TrySend(BusMsgType::Close, EncodeBusClose());
+    });
+
+    server.join();
+    client.join();
+
+    EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
+    EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+    EXPECT_EQ(registry.size(), 0u);
+}
+
+TEST(PopulationSession, ProtocolOpenAfterTickIsFatal) {
+    // Second Open after Tick is not Allowed in AwaitOrderOrAdvance.
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
+
+    FinishSessionStatus status = FinishSessionStatus::Failed;
+    SessionEnded ended;
+
+    auto events = std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(2, 200, {{100.0, 8}}, {{101.0, 5}}),
+    };
+
+    std::thread server([&] {
+        const int raw = listener.AcceptTimeout(5000);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
+            return;
+        }
+        PopulationSession session(conn, registry, MakeCfg("pop-reopen", std::move(events)));
+        status = session.Run();
+    });
+
+    std::thread client([&] {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        const auto ack = RequestCreateQueues(conn, CreateQueues{.population_id = "pop-reopen"});
+        if (ack.status != AckStatus::Ok) {
+            return;
+        }
+
+        SpscBus out(registry.FindOut(ack.out_queue));
+        SpscBus in(registry.FindIn(ack.in_queue));
+
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(MakeTestOpen("pop-reopen", 1)))) {
+            return;
+        }
+
+        BusMsgType type{};
+        std::vector<std::uint8_t> payload;
+        ASSERT_TRUE(RecvMessage(out, type, payload));
+        EXPECT_EQ(type, BusMsgType::OpenAck);
+        ASSERT_TRUE(RecvMessage(out, type, payload));
+        EXPECT_EQ(type, BusMsgType::Tick);
+
+        // Illegal: Open again mid-run.
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(MakeTestOpen("pop-reopen", 1)))) {
+            return;
+        }
+
+        ASSERT_TRUE(RecvMessage(out, type, payload));
+        EXPECT_EQ(type, BusMsgType::Error);
+
+        ASSERT_TRUE(WaitSessionEnded(conn, ended));
+        EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+        EXPECT_FALSE(ended.message.empty());
+        (void)in.TrySend(BusMsgType::Close, EncodeBusClose());
+    });
+
+    server.join();
+    client.join();
+
+    EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
+    EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+    EXPECT_EQ(registry.size(), 0u);
+}
+
+TEST(PopulationSession, BadOrderBatchUnknownSlotIsFatal) {
+    // Submit reject → OrdersAck ERROR + SessionEnded{fatal} (recoverable later).
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
+
+    FinishSessionStatus status = FinishSessionStatus::Failed;
+    SessionEnded ended;
+    BusOrdersAck orders_ack;
+
+    auto events = std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(2, 200, {{100.0, 8}}, {{101.0, 5}}),
+    };
+
+    std::thread server([&] {
+        const int raw = listener.AcceptTimeout(5000);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
+            return;
+        }
+        PopulationSession session(conn, registry, MakeCfg("pop-ord", std::move(events)));
+        status = session.Run();
+    });
+
+    std::thread client([&] {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        const auto ack = RequestCreateQueues(conn, CreateQueues{.population_id = "pop-ord"});
+        if (ack.status != AckStatus::Ok) {
+            return;
+        }
+
+        SpscBus out(registry.FindOut(ack.out_queue));
+        SpscBus in(registry.FindIn(ack.in_queue));
+
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(MakeTestOpen("pop-ord", 1)))) {
+            return;
+        }
+
+        BusMsgType type{};
+        std::vector<std::uint8_t> payload;
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::OpenAck) {
+            return;
+        }
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::Tick) {
+            return;
+        }
+
+        BusOrderBatch batch;
+        batch.orders.push_back(BusOrder{
+            .slot_id = 99,  // unknown
+            .client_order_id = 1,
+            .component_id = "SPOT",
+            .side = BusSide::Buy,
+            .price = BusPrice{.whole = 100, .frac = 0},
+            .qty = 1,
+            .tif = BusTimeInForce::Day,
+        });
+        if (!in.TrySend(BusMsgType::OrderBatch, EncodeBusOrderBatch(batch))) {
+            return;
+        }
+
+        ASSERT_TRUE(RecvMessage(out, type, payload));
+        EXPECT_EQ(type, BusMsgType::OrdersAck);
+        ASSERT_TRUE(DecodeBusOrdersAck(payload.data(), payload.size(), orders_ack));
+        EXPECT_EQ(orders_ack.status, AckStatus::Error);
+        EXPECT_FALSE(orders_ack.message.empty());
+
+        while (RecvMessage(out, type, payload, std::chrono::milliseconds(50))) {
+            if (type == BusMsgType::Error) {
+                break;
+            }
+        }
+
+        ASSERT_TRUE(WaitSessionEnded(conn, ended));
+        EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+        EXPECT_FALSE(ended.message.empty());
+        (void)in.TrySend(BusMsgType::Close, EncodeBusClose());
+    });
+
+    server.join();
+    client.join();
+
+    EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
+    EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+    EXPECT_EQ(orders_ack.status, AckStatus::Error);
+    EXPECT_EQ(registry.size(), 0u);
+}
+
+TEST(PopulationSession, TruncatedOrderBatchIsFatal) {
+    // Undecodable OrderBatch → fatal (no OrdersAck).
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
+
+    FinishSessionStatus status = FinishSessionStatus::Failed;
+    SessionEnded ended;
+
+    auto events = std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(2, 200, {{100.0, 8}}, {{101.0, 5}}),
+    };
+
+    std::thread server([&] {
+        const int raw = listener.AcceptTimeout(5000);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
+            return;
+        }
+        PopulationSession session(conn, registry, MakeCfg("pop-trunc", std::move(events)));
+        status = session.Run();
+    });
+
+    std::thread client([&] {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        const auto ack = RequestCreateQueues(conn, CreateQueues{.population_id = "pop-trunc"});
+        if (ack.status != AckStatus::Ok) {
+            return;
+        }
+
+        SpscBus out(registry.FindOut(ack.out_queue));
+        SpscBus in(registry.FindIn(ack.in_queue));
+
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(MakeTestOpen("pop-trunc", 1)))) {
+            return;
+        }
+
+        BusMsgType type{};
+        std::vector<std::uint8_t> payload;
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::OpenAck) {
+            return;
+        }
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::Tick) {
+            return;
+        }
+
+        BusOrderBatch batch;
+        batch.orders.push_back(BusOrder{
+            .slot_id = 1,
+            .client_order_id = 1,
+            .component_id = "SPOT",
+            .side = BusSide::Buy,
+            .price = BusPrice{.whole = 100, .frac = 0},
+            .qty = 1,
+            .tif = BusTimeInForce::Day,
+        });
+        auto bytes = EncodeBusOrderBatch(batch);
+        ASSERT_GT(bytes.size(), 4u);
+        bytes.resize(bytes.size() - 1);
+        if (!in.TrySend(BusMsgType::OrderBatch, bytes)) {
+            return;
+        }
+
+        ASSERT_TRUE(RecvMessage(out, type, payload));
+        EXPECT_EQ(type, BusMsgType::Error);
+
+        ASSERT_TRUE(WaitSessionEnded(conn, ended));
+        EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+        (void)in.TrySend(BusMsgType::Close, EncodeBusClose());
+    });
+
+    server.join();
+    client.join();
+
+    EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
+    EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+    EXPECT_EQ(registry.size(), 0u);
+}
+
+TEST(PopulationSession, DuplicateTimestampOnAdvanceIsFatal) {
+    // Repeated ts_ns throws from the tape on Advance. The session reports it
+    // and ends this population; it must not abort the process.
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
+
+    FinishSessionStatus status = FinishSessionStatus::Failed;
+    SessionEnded ended;
+
+    auto events = std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(2, 200, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(3, 200, {{100.01, 10}}, {{101.0, 5}}),
+    };
+
+    std::thread server([&] {
+        const int raw = listener.AcceptTimeout(5000);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
+            return;
+        }
+        PopulationSession session(conn, registry, MakeCfg("pop-dup", std::move(events)));
+        status = session.Run();
+    });
+
+    std::thread client([&] {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        const auto ack = RequestCreateQueues(conn, CreateQueues{.population_id = "pop-dup"});
+        if (ack.status != AckStatus::Ok) {
+            return;
+        }
+
+        SpscBus out(registry.FindOut(ack.out_queue));
+        SpscBus in(registry.FindIn(ack.in_queue));
+
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(MakeTestOpen("pop-dup", 1)))) {
+            return;
+        }
+
+        BusMsgType type{};
+        std::vector<std::uint8_t> payload;
+        ASSERT_TRUE(RecvMessage(out, type, payload));
+        EXPECT_EQ(type, BusMsgType::OpenAck);
+        BusOpenAck open_ack;
+        ASSERT_TRUE(DecodeBusOpenAck(payload.data(), payload.size(), open_ack));
+        EXPECT_EQ(open_ack.status, AckStatus::Ok);
+
+        ASSERT_TRUE(RecvMessage(out, type, payload));
+        EXPECT_EQ(type, BusMsgType::Tick);
+        BusTick tick;
+        ASSERT_TRUE(DecodeBusTick(payload.data(), payload.size(), tick));
+        EXPECT_EQ(tick.pop_ts_ns, 100u);
+
+        ASSERT_TRUE(in.TrySend(BusMsgType::Advance, EncodeBusAdvance()));
+
+        ASSERT_TRUE(RecvMessage(out, type, payload));
+        EXPECT_EQ(type, BusMsgType::Error);
+        transport::BusError err;
+        ASSERT_TRUE(DecodeBusError(payload.data(), payload.size(), err));
+        EXPECT_FALSE(err.message.empty());
+
+        ASSERT_TRUE(WaitSessionEnded(conn, ended));
+        EXPECT_FALSE(ended.message.empty());
+        (void)in.TrySend(BusMsgType::Close, EncodeBusClose());
+    });
+
+    server.join();
+    client.join();
+
+    EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
+    EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+    EXPECT_EQ(registry.size(), 0u);
+}
+
+TEST(PopulationSession, FullRingTimeoutIsFatal) {
+    // First tick is larger than the ring. Nobody reads it, so the send waits
+    // out drain_timeout and the session ends fatal.
+    constexpr int kSlots = 5000;
+    constexpr int kLevels = 10;
+    std::vector<Level> bids;
+    std::vector<Level> asks;
+    bids.reserve(kLevels);
+    asks.reserve(kLevels);
+    for (int i = 0; i < kLevels; ++i) {
+        bids.push_back(Level{100.0 - i * 0.01, 10});
+        asks.push_back(Level{101.0 + i * 0.01, 10});
+    }
+
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
+
+    FinishSessionStatus status = FinishSessionStatus::Failed;
+    SessionEnded ended;
+
+    std::thread server([&] {
+        const int raw = listener.AcceptTimeout(5000);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
+            return;
+        }
+        SessionConfig cfg = MakeCfg("pop-full", {Ev(1, 100, bids, asks)});
+        cfg.drain_timeout_ms = 300;
+        PopulationSession session(conn, registry, std::move(cfg));
+        status = session.Run();
+    });
+
+    std::thread client([&] {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        const auto ack = RequestCreateQueues(conn, CreateQueues{.population_id = "pop-full"});
+        if (ack.status != AckStatus::Ok) {
+            return;
+        }
+
+        SpscBus in(registry.FindIn(ack.in_queue));
+        BusOpen open = MakeTestOpen("pop-full", kSlots);
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(open))) {
+            return;
+        }
+
+        ASSERT_TRUE(WaitSessionEnded(conn, ended));
+        EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+        EXPECT_EQ(ended.reason_code, ErrorCode::DrainTimeout);
+        EXPECT_FALSE(ended.message.empty());
+        (void)in.TrySend(BusMsgType::Close, EncodeBusClose());
+    });
+
+    server.join();
+    client.join();
+
+    EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
+    EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+    EXPECT_EQ(ended.reason_code, ErrorCode::DrainTimeout);
+    EXPECT_EQ(registry.size(), 0u);
+}
