@@ -61,6 +61,9 @@ struct WorkingOrder {
     TimeInForce tif = TimeInForce::Unknown;
     // Decision at pop_ts → matchable at pop_ts + slot.Δ (TZ §5.4).
     std::uint64_t effective_ts_ns = 0;
+    // True after a tick where this order was already matchable and still live.
+    // A resting order is passive: the market hits it at its own price.
+    bool rested = false;
     // 0 until a cancel is accepted. Due at pop_ts + Δ, same delay as a new order.
     std::uint64_t cancel_effective_ts_ns = 0;
     // Submit stamp. A second cancel of this id in the same batch sees the same stamp.

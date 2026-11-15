@@ -29,7 +29,32 @@ bool CanFullyFill(Side side, long long price_ticks, std::uint64_t qty,
 }
 
 void MatchOne(WorkingOrder& working, std::vector<Level>& opposite, double tick_size,
-              std::vector<Trade>& trades) {
+              std::vector<Trade>& trades, bool passive) {
+    if (passive) {
+        for (const Level& level : opposite) {
+            if (level.qty == 0) {
+                continue;
+            }
+            const long long touch_ticks = PriceToTicks(level.price, tick_size);
+            const bool crosses = (working.side == Side::Buy) ? (working.price_ticks >= touch_ticks)
+                                                             : (working.price_ticks <= touch_ticks);
+            if (!crosses || working.leaves == 0) {
+                return;
+            }
+            Trade fill;
+            fill.client_order_id = working.client_order_id;
+            fill.exec_type = ExecType::Fill;
+            fill.component_id = working.component_id;
+            fill.price = TicksToPrice(working.price_ticks, tick_size);
+            fill.qty = working.leaves;
+            working.leaves = 0;
+            fill.leaves = 0;
+            trades.push_back(std::move(fill));
+            return;
+        }
+        return;
+    }
+
     while (working.leaves > 0 && !opposite.empty()) {
         Level& touch = opposite.front();
         if (touch.qty == 0) {

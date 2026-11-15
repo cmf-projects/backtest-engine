@@ -100,9 +100,11 @@ void SlotOrders::MatchDue(std::uint64_t pop_ts_ns, std::vector<Level>& bids,
             }
         }
 
+        const bool passive = working.rested;
         const std::size_t trades_before = trades.size();
-        MatchOne(working, opposite, tick_size, trades);
-        if (impact != nullptr) {
+        MatchOne(working, opposite, tick_size, trades, passive);
+        // A resting fill does not take file liquidity. The new book is what remains.
+        if (impact != nullptr && !passive) {
             for (std::size_t i = trades_before; i < trades.size(); ++i) {
                 if (trades[i].exec_type != ExecType::Fill) {
                     continue;
@@ -110,6 +112,9 @@ void SlotOrders::MatchDue(std::uint64_t pop_ts_ns, std::vector<Level>& bids,
                 impact->OnFill(working.side, PriceToTicks(trades[i].price, tick_size),
                                trades[i].qty, pop_ts_ns);
             }
+        }
+        if (working.leaves > 0) {
+            working.rested = true;
         }
 
         if (working.tif == TimeInForce::Ioc && working.leaves > 0) {

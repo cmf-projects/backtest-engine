@@ -121,3 +121,51 @@ TEST(MatchDue, IocCancelsLeftover) {
     EXPECT_EQ(tick.slots[0].trades[1].exec_type, ExecType::Cancel);
     EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 0u);
 }
+
+TEST(MatchDue, RestingBuyFillsAtItsPriceWhenMarketTradesThrough) {
+    auto book = [](std::uint64_t ts, double ask) {
+        SnapshotEvent e;
+        e.seq = ts;
+        e.ts_ns = ts;
+        e.symbol = "TEST";
+        e.bids = {Level{99.0, 10}};
+        e.asks = {Level{ask, 5}};
+        return e;
+    };
+    auto tape = std::make_unique<FakeTape>(std::vector<SnapshotEvent>{
+        book(100, 101.0),
+        book(200, 101.0),
+        book(300, 99.5),
+    });
+    Population pop("C1", 0.01, std::move(tape),
+                   {SlotConfig{.slot_id = 1, .md_lag_ns = 0, .delta_ns = 50}});
+    pop.Start();
+    (void)pop.MakeTick();
+
+    OrderBatch batch;
+    batch.orders.push_back(NewOrder{1, 7, "C1", Side::Buy, 100.0, 4, TimeInForce::Day});
+    ASSERT_EQ(pop.Submit(batch).order_results[0], OrderResult::Ok);
+
+    ASSERT_TRUE(pop.Advance());  // 200, ask still 101, order rests inside the spread
+    EXPECT_TRUE(pop.MakeTick().slots[0].trades.empty());
+    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 1u);
+
+    ASSERT_TRUE(pop.Advance());  // 300, ask trades through 100 down to 99.5
+    const auto tick = pop.MakeTick();
+    ASSERT_EQ(tick.slots[0].trades.size(), 1u);
+    EXPECT_EQ(tick.slots[0].trades[0].exec_type, ExecType::Fill);
+    EXPECT_EQ(tick.slots[0].trades[0].qty, 4u);
+    EXPECT_EQ(tick.slots[0].trades[0].leaves, 0u);
+    EXPECT_DOUBLE_EQ(tick.slots[0].trades[0].price, 100.0);
+    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 0u);
+
+    ASSERT_EQ(tick.slots[0].n_books, 1u);
+    bool saw_ask = false;
+    for (const Level& level : tick.slots[0].books[0].asks) {
+        if (level.price == 99.5) {
+            saw_ask = true;
+            EXPECT_EQ(level.qty, 5u);
+        }
+    }
+    EXPECT_TRUE(saw_ask);
+}
