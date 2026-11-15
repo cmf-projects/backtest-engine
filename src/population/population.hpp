@@ -21,6 +21,10 @@
 
 namespace population {
 
+// A hole longer than this is a closed session (night, weekend), not a quiet
+// stretch of the bar grid. One Advance lands on the next quote. One hour.
+inline constexpr std::uint64_t kSessionGapNs = 3'600'000'000'000ULL;
+
 // One Open.components[] row + its tape (IMPL 3.2).
 struct ComponentSpec {
     std::string component_id;
@@ -75,6 +79,7 @@ public:
     // -1: each Advance jumps to the next dataset timestamp.
     // > 0: each Advance moves pop_ts by this many nanoseconds. Dataset snaps
     // are applied when pop_ts reaches them; between snaps the book is kept.
+    // A hole longer than kSessionGapNs jumps to the next quote instead.
     void SetStepNs(std::int64_t step_ns);
 
     [[nodiscard]] bool started() const noexcept { return started_; }

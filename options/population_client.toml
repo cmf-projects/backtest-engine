@@ -19,6 +19,6 @@ delta_ns = 30000000
 # Clock step. 100ms. -1 would follow dataset timestamps instead.
 step_ns = 100000000
 impact_lambda = "1e-15"
-# One dataset is opened as SPOT, FUT and OPT. Send an IOC on best bid or best ask
-# once per this many ticks.
-order_every_ticks = 8
+# One dataset is opened as SPOT, FUT and OPT. The client keeps the last bid and
+# ask. Every this many ticks it buys the ask or sells the bid.
+order_every_ticks = 4

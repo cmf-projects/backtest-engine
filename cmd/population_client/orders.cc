@@ -8,24 +8,53 @@ using transport::BusTimeInForce;
 namespace client {
 namespace {
 
-void CollectBooks(const transport::BusTick& tick, std::vector<const transport::BusBookUpdate*>& out) {
-    out.clear();
-    if (!tick.slots.empty()) {
-        for (std::uint32_t i = 0; i < tick.slots[0].n_books; ++i) {
-            const auto& book = tick.slots[0].books[i];
-            if (book.bids.empty() && book.asks.empty()) {
-                continue;
-            }
-            out.push_back(&book);
+[[nodiscard]] RememberedBook& FindBook(std::vector<RememberedBook>& memory, const std::string& id) {
+    for (RememberedBook& book : memory) {
+        if (book.component_id == id) {
+            return book;
         }
     }
-    if (out.empty()) {
-        for (std::uint32_t i = 0; i < tick.n_books; ++i) {
-            const auto& book = tick.books[i];
-            if (book.bids.empty() && book.asks.empty()) {
-                continue;
+    memory.push_back(RememberedBook{.component_id = id});
+    return memory.back();
+}
+
+void ApplySide(bool& has, transport::BusPrice& price, std::uint64_t& qty,
+               const std::vector<transport::BusBookLevel>& levels, bool replace) {
+    if (replace) {
+        has = false;
+        qty = 0;
+    }
+    for (const transport::BusBookLevel& level : levels) {
+        if (level.qty == 0) {
+            if (has && price == level.price) {
+                has = false;
+                qty = 0;
             }
-            out.push_back(&book);
+            continue;
+        }
+        has = true;
+        price = level.price;
+        qty = level.qty;
+    }
+}
+
+void Remember(std::vector<RememberedBook>& memory, const transport::BusBookUpdate& update) {
+    if (update.component_id.empty()) {
+        return;
+    }
+    RememberedBook& book = FindBook(memory, update.component_id);
+    const bool replace = update.kind != transport::BusBookPatchKind::Diff;
+    ApplySide(book.has_bid, book.bid, book.bid_qty, update.bids, replace);
+    ApplySide(book.has_ask, book.ask, book.ask_qty, update.asks, replace);
+}
+
+void RememberTick(const transport::BusTick& tick, std::vector<RememberedBook>& memory) {
+    for (std::uint32_t i = 0; i < tick.n_books; ++i) {
+        Remember(memory, tick.books[i]);
+    }
+    for (const auto& slot : tick.slots) {
+        for (std::uint32_t i = 0; i < slot.n_books; ++i) {
+            Remember(memory, slot.books[i]);
         }
     }
 }
@@ -72,20 +101,17 @@ void NoteTrades(const transport::BusTick& tick, DensePending& pending, RunStats&
 
 void MakeTakeBatch(const transport::BusTick& tick, int tick_n, int order_every,
                    std::uint64_t& next_oid, DensePending& pending, transport::BusOrderBatch& batch,
-                   std::vector<const transport::BusBookUpdate*>& books) {
+                   std::vector<RememberedBook>& memory) {
+    RememberTick(tick, memory);
     batch.orders.clear();
     batch.cancels.clear();
-    if (order_every < 1 || tick_n % order_every != 0) {
-        return;
-    }
-    CollectBooks(tick, books);
-    if (books.empty()) {
+    if (order_every < 1 || tick_n % order_every != 0 || memory.empty()) {
         return;
     }
     const bool buy_ask = ((tick_n / order_every) % 2) == 0;
     const std::uint32_t slot_id = tick.slots.empty() ? 1u : tick.slots[0].slot_id;
 
-    auto push = [&](BusSide side, const transport::BusBookUpdate& book, const transport::BusPrice& px) {
+    auto push = [&](BusSide side, const RememberedBook& book, const transport::BusPrice& px) {
         const std::uint64_t oid = next_oid++;
         batch.orders.push_back(BusOrder{
             .slot_id = slot_id,
@@ -106,16 +132,13 @@ void MakeTakeBatch(const transport::BusTick& tick, int tick_n, int order_every,
 
     auto price_ok = [](const transport::BusPrice& px) { return px.whole > 0 || px.frac > 0; };
 
-    for (const transport::BusBookUpdate* book : books) {
-        if (book == nullptr) {
-            continue;
-        }
+    for (const RememberedBook& book : memory) {
         if (buy_ask) {
-            if (!book->asks.empty() && book->asks[0].qty > 0 && price_ok(book->asks[0].price)) {
-                push(BusSide::Buy, *book, book->asks[0].price);
+            if (book.has_ask && book.ask_qty > 0 && price_ok(book.ask)) {
+                push(BusSide::Buy, book, book.ask);
             }
-        } else if (!book->bids.empty() && book->bids[0].qty > 0 && price_ok(book->bids[0].price)) {
-            push(BusSide::Sell, *book, book->bids[0].price);
+        } else if (book.has_bid && book.bid_qty > 0 && price_ok(book.bid)) {
+            push(BusSide::Sell, book, book.bid);
         }
     }
 }

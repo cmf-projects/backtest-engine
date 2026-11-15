@@ -11,6 +11,8 @@
 #include <vector>
 
 using population::BookPatchKind;
+using population::ExecType;
+using population::kSessionGapNs;
 using population::Level;
 using population::TicksToPrice;
 using population::NewOrder;
@@ -201,6 +203,72 @@ TEST(PopulationTick, FixedStepHoldsBookUntilDatasetEvent) {
     EXPECT_EQ(tick.slots[0].books[0].bids[0].qty, 8u);
 
     EXPECT_FALSE(pop.Advance());
+}
+
+TEST(PopulationTick, GapLongerThanThresholdJumpsToNextEvent) {
+    constexpr std::uint64_t kOpen = 100 + kSessionGapNs + 1;
+    auto tape = std::make_unique<FakeTape>(std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(2, kOpen, {{100.0, 8}}, {{101.0, 5}}),
+    });
+    Population pop("C1", 0.01, std::move(tape), OneSlot());
+    pop.SetStepNs(100);
+    pop.Start();
+    (void)pop.MakeTick();
+
+    ASSERT_TRUE(pop.Advance());
+    EXPECT_EQ(pop.clock().pop_ts_ns(), kOpen);
+    const auto tick = pop.MakeTick();
+    ASSERT_EQ(tick.slots[0].n_books, 1u);
+    EXPECT_EQ(tick.slots[0].books[0].bids[0].qty, 8u);
+    EXPECT_FALSE(pop.Advance());
+}
+
+TEST(PopulationTick, GapShorterThanThresholdKeepsTheStep) {
+    auto tape = std::make_unique<FakeTape>(std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(2, 500, {{100.0, 8}}, {{101.0, 5}}),
+    });
+    Population pop("C1", 0.01, std::move(tape), OneSlot());
+    pop.SetStepNs(100);
+    pop.Start();
+    (void)pop.MakeTick();
+
+    ASSERT_TRUE(pop.Advance());
+    EXPECT_EQ(pop.clock().pop_ts_ns(), 200u);
+    EXPECT_EQ(pop.MakeTick().slots[0].n_books, 0u);
+}
+
+TEST(PopulationTick, OrderDueInsideAGapFillsAtTheOpen) {
+    constexpr std::uint64_t kOpen = 100 + kSessionGapNs + 1;
+    auto tape = std::make_unique<FakeTape>(std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(2, kOpen, {{100.0, 10}}, {{101.0, 5}}),
+    });
+    Population pop("C1", 0.01, std::move(tape),
+                   {SlotConfig{.slot_id = 1, .md_lag_ns = 0, .delta_ns = 50, .impact_lambda = 0.0}});
+    pop.SetStepNs(100);
+    pop.Start();
+
+    OrderBatch batch;
+    batch.orders.push_back(NewOrder{
+        .slot_id = 1,
+        .client_order_id = 7,
+        .component_id = "C1",
+        .side = Side::Buy,
+        .price = 101.0,
+        .qty = 1,
+        .tif = TimeInForce::Day,
+    });
+    EXPECT_EQ(pop.Submit(batch).order_results[0], OrderResult::Ok);
+
+    ASSERT_TRUE(pop.Advance());
+    EXPECT_EQ(pop.clock().pop_ts_ns(), kOpen);
+    const auto tick = pop.MakeTick();
+    ASSERT_EQ(tick.slots[0].trades.size(), 1u);
+    EXPECT_EQ(tick.slots[0].trades[0].exec_type, ExecType::Fill);
+    EXPECT_EQ(tick.slots[0].trades[0].qty, 1u);
+    EXPECT_DOUBLE_EQ(tick.slots[0].trades[0].price, 101.0);
 }
 
 TEST(PopulationTick, NegativeStepFollowsDatasetTimestamps) {
