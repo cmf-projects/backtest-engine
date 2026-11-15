@@ -4,6 +4,7 @@
 #include "transport/wire_bytes.hpp"
 
 #include <cstdint>
+#include <initializer_list>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -181,6 +182,113 @@ TEST(BusFraming, KeyframeOfFortyBidsRoundTrips) {
     EXPECT_EQ(got.slots[0].books[0].asks[0].qty, 5u);
 }
 
+TEST(BusFraming, LivePrefixFollowsMessageOrder) {
+    constexpr BusPrice k100{.whole = 100, .frac = 0};
+    constexpr BusPrice k101{.whole = 101, .frac = 0};
+
+    BusTick both;
+    both.pop_ts_ns = 1;
+    both.n_books = 2;
+    both.books.push_back(BusBookUpdate{
+        .component_id = "FUT",
+        .kind = BusBookPatchKind::Keyframe,
+        .bids = {{.price = k100, .qty = 1}},
+        .asks = {{.price = k101, .qty = 1}},
+    });
+    both.books.push_back(BusBookUpdate{
+        .component_id = "SPOT",
+        .kind = BusBookPatchKind::Keyframe,
+        .bids = {{.price = k100, .qty = 2}},
+        .asks = {{.price = k101, .qty = 2}},
+    });
+    BusTick spot;
+    spot.pop_ts_ns = 2;
+    spot.n_books = 1;
+    spot.books.push_back(BusBookUpdate{
+        .component_id = "SPOT",
+        .kind = BusBookPatchKind::Diff,
+        .bids = {{.price = k100, .qty = 3}},
+        .asks = {},
+    });
+
+    const auto both_bytes = EncodeBusTick(both);
+    const auto spot_bytes = EncodeBusTick(spot);
+    BusTick got;
+    ASSERT_TRUE(DecodeBusTick(both_bytes.data(), both_bytes.size(), got));
+    ASSERT_EQ(got.n_books, 2u);
+    EXPECT_EQ(got.books[0].component_id, "FUT");
+
+    ASSERT_TRUE(DecodeBusTick(spot_bytes.data(), spot_bytes.size(), got));
+    EXPECT_EQ(got.n_books, 1u);
+    EXPECT_EQ(got.books[0].component_id, "SPOT");
+    EXPECT_EQ(got.books[0].kind, BusBookPatchKind::Diff);
+    ASSERT_EQ(got.books[0].bids.size(), 1u);
+    EXPECT_EQ(got.books[0].bids[0].qty, 3u);
+    EXPECT_EQ(EncodeBusTick(got), spot_bytes);
+}
+
+TEST(BusFraming, BookStorageReusedForOneOrMoreComponents) {
+    constexpr BusPrice k100{.whole = 100, .frac = 0};
+    constexpr BusPrice k101{.whole = 101, .frac = 0};
+
+    auto book = [](const char* id, BusBookPatchKind kind, std::uint64_t bid_qty) {
+        return BusBookUpdate{
+            .component_id = id,
+            .kind = kind,
+            .bids = {{.price = k100, .qty = bid_qty}},
+            .asks = {{.price = k101, .qty = 1}},
+        };
+    };
+    auto encode = [&](std::uint64_t ts, std::initializer_list<BusBookUpdate> books) {
+        BusTick tick;
+        tick.pop_ts_ns = ts;
+        tick.n_books = static_cast<std::uint32_t>(books.size());
+        tick.books.assign(books);
+        return EncodeBusTick(tick);
+    };
+
+    const auto one = encode(1, {book("SPOT", BusBookPatchKind::Keyframe, 1)});
+    const auto two = encode(2, {book("FUT", BusBookPatchKind::Keyframe, 2),
+                                 book("SPOT", BusBookPatchKind::Keyframe, 3)});
+    const auto spot_again = encode(3, {book("SPOT", BusBookPatchKind::Diff, 4)});
+
+    BusTick got;
+    ASSERT_TRUE(DecodeBusTick(one.data(), one.size(), got));
+    ASSERT_TRUE(DecodeBusTick(two.data(), two.size(), got));
+    ASSERT_EQ(got.n_books, 2u);
+
+    const auto* books_data = got.books.data();
+    const auto books_cap = got.books.capacity();
+    const auto* fut_bids = got.books[0].bids.data();
+    const auto* fut_asks = got.books[0].asks.data();
+    const auto* spot_bids = got.books[1].bids.data();
+    const auto* spot_asks = got.books[1].asks.data();
+    const auto fut_bids_cap = got.books[0].bids.capacity();
+    const auto spot_bids_cap = got.books[1].bids.capacity();
+
+    ASSERT_TRUE(DecodeBusTick(spot_again.data(), spot_again.size(), got));
+    EXPECT_EQ(got.n_books, 1u);
+    EXPECT_EQ(got.books[0].component_id, "SPOT");
+    EXPECT_EQ(got.books[0].kind, BusBookPatchKind::Diff);
+    EXPECT_EQ(got.books.data(), books_data);
+    EXPECT_EQ(got.books.capacity(), books_cap);
+    EXPECT_EQ(got.books.size(), 2u);
+    EXPECT_EQ(got.books[0].bids.data(), fut_bids);
+    EXPECT_EQ(got.books[0].asks.data(), fut_asks);
+    EXPECT_EQ(got.books[0].bids.capacity(), fut_bids_cap);
+    EXPECT_EQ(got.books[1].bids.data(), spot_bids);
+    EXPECT_EQ(got.books[1].asks.data(), spot_asks);
+    EXPECT_EQ(got.books[1].bids.capacity(), spot_bids_cap);
+
+    ASSERT_TRUE(DecodeBusTick(two.data(), two.size(), got));
+    EXPECT_EQ(got.n_books, 2u);
+    EXPECT_EQ(got.books[0].component_id, "FUT");
+    EXPECT_EQ(got.books[1].component_id, "SPOT");
+    EXPECT_EQ(got.books.data(), books_data);
+    EXPECT_EQ(got.books[0].bids.data(), fut_bids);
+    EXPECT_EQ(got.books[1].bids.data(), spot_bids);
+}
+
 TEST(BusFraming, MissingComponentClearsLevelsKeepsCapacity) {
     constexpr BusPrice k100{.whole = 100, .frac = 0};
     constexpr BusPrice k101{.whole = 101, .frac = 0};
@@ -215,10 +323,10 @@ TEST(BusFraming, MissingComponentClearsLevelsKeepsCapacity) {
 
     const auto spot_only = encode(false);
     ASSERT_TRUE(DecodeBusTick(spot_only.data(), spot_only.size(), got));
+    EXPECT_EQ(got.n_books, 1u);
     ASSERT_EQ(got.books.size(), 2u);
     EXPECT_EQ(got.books[0].component_id, "SPOT");
     EXPECT_EQ(got.books[0].bids.size(), 1u);
-    EXPECT_EQ(got.books[1].component_id, "FUT");
     EXPECT_TRUE(got.books[1].bids.empty());
     EXPECT_TRUE(got.books[1].asks.empty());
     EXPECT_GE(got.books[1].bids.capacity(), 1u);

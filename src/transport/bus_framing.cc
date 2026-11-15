@@ -73,39 +73,36 @@ void AppendBookUpdate(std::vector<std::uint8_t>& out, const BusBookUpdate& book)
     AppendLevels(out, book.asks);
 }
 
-// Stable slot per component_id. Clear every known side first (size 0, capacity
-// kept). Then write only the ids present in this message; the rest stay empty.
+// Books of this message occupy the live prefix books[0, n). Each book's
+// component_id comes from its own header. Storage past n stays allocated;
+// its levels are cleared so a stale book is not readable.
 [[nodiscard]] bool ReadComponentBooks(const std::uint8_t*& p, const std::uint8_t* end,
                                       std::vector<BusBookUpdate>& books, std::uint32_t& n_books) {
     std::uint32_t n = 0;
     if (!ReadU32(p, end, n)) {
         return false;
     }
-    for (BusBookUpdate& book : books) {
-        book.bids.clear();
-        book.asks.clear();
+    // component_id + kind + two empty level counts.
+    constexpr std::size_t kMinBookBytes = 13;
+    if (!CountFits(p, end, n, kMinBookBytes)) {
+        return false;
+    }
+    if (books.size() < n) {
+        books.resize(n);
     }
     for (std::uint32_t i = 0; i < n; ++i) {
-        std::string id;
-        if (!ReadString(p, end, id) || p >= end) {
+        BusBookUpdate& book = books[i];
+        if (!ReadString(p, end, book.component_id) || p >= end) {
             return false;
         }
-        BusBookUpdate* slot = nullptr;
-        for (BusBookUpdate& book : books) {
-            if (book.component_id == id) {
-                slot = &book;
-                break;
-            }
-        }
-        if (slot == nullptr) {
-            books.emplace_back();
-            slot = &books.back();
-            slot->component_id = std::move(id);
-        }
-        slot->kind = static_cast<BusBookPatchKind>(*p++);
-        if (!ReadLevels(p, end, slot->bids) || !ReadLevels(p, end, slot->asks)) {
+        book.kind = static_cast<BusBookPatchKind>(*p++);
+        if (!ReadLevels(p, end, book.bids) || !ReadLevels(p, end, book.asks)) {
             return false;
         }
+    }
+    for (std::size_t i = n; i < books.size(); ++i) {
+        books[i].bids.clear();
+        books[i].asks.clear();
     }
     n_books = n;
     return true;
