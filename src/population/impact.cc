@@ -4,19 +4,23 @@
 
 #include <algorithm>
 #include <cmath>
-#include <unordered_set>
 
 namespace population {
 namespace {
 
-[[nodiscard]] std::unordered_set<long long> PresentTicks(const std::vector<Level>& levels,
-                                                         double tick_size) {
-    std::unordered_set<long long> out;
-    out.reserve(levels.size());
-    for (const Level& level : levels) {
-        out.insert(PriceToTicks(level.price, tick_size));
-    }
-    return out;
+// Bids are best-first (descending), asks are best-first (ascending).
+[[nodiscard]] bool SideHasTick(const std::vector<Level>& levels, long long price_ticks,
+                               double tick_size, bool descending) {
+    const auto it = descending
+                        ? std::lower_bound(levels.begin(), levels.end(), price_ticks,
+                                           [&](const Level& level, long long ticks) {
+                                               return PriceToTicks(level.price, tick_size) > ticks;
+                                           })
+                        : std::lower_bound(levels.begin(), levels.end(), price_ticks,
+                                           [&](const Level& level, long long ticks) {
+                                               return PriceToTicks(level.price, tick_size) < ticks;
+                                           });
+    return it != levels.end() && PriceToTicks(it->price, tick_size) == price_ticks;
 }
 
 }  // namespace
@@ -27,40 +31,58 @@ void ImpactState::Recover(const std::vector<Level>& file_bids, const std::vector
         return;
     }
 
-    const auto bid_ticks = PresentTicks(file_bids, tick_size);
-    const auto ask_ticks = PresentTicks(file_asks, tick_size);
-
-    for (auto it = levels_.begin(); it != levels_.end();) {
-        const bool alive = (it->first.side == Side::Buy)
-                               ? bid_ticks.count(it->first.price_ticks) > 0
-                               : ask_ticks.count(it->first.price_ticks) > 0;
+    std::size_t i = 0;
+    while (i < levels_.size()) {
+        EatenLevel& st = levels_[i];
+        const bool alive = (st.side == Side::Buy)
+                               ? SideHasTick(file_bids, st.price_ticks, tick_size, true)
+                               : SideHasTick(file_asks, st.price_ticks, tick_size, false);
         if (!alive) {
-            it = levels_.erase(it);
+            levels_[i] = levels_.back();
+            levels_.pop_back();
             continue;
         }
 
-        LevelState& st = it->second;
         if (t_new_ns > st.t_last_ns) {
             const double dt = static_cast<double>(t_new_ns - st.t_last_ns);
             st.eaten *= std::exp(-lambda_ * dt);
             st.t_last_ns = t_new_ns;
             if (st.eaten < 1e-12) {
-                it = levels_.erase(it);
+                levels_[i] = levels_.back();
+                levels_.pop_back();
                 continue;
             }
         }
-        ++it;
+        ++i;
     }
+}
+
+ImpactState::EatenLevel* ImpactState::Find(Side side, long long price_ticks) {
+    for (EatenLevel& level : levels_) {
+        if (level.side == side && level.price_ticks == price_ticks) {
+            return &level;
+        }
+    }
+    return nullptr;
+}
+
+const ImpactState::EatenLevel* ImpactState::Find(Side side, long long price_ticks) const {
+    for (const EatenLevel& level : levels_) {
+        if (level.side == side && level.price_ticks == price_ticks) {
+            return &level;
+        }
+    }
+    return nullptr;
 }
 
 void ImpactState::ApplySide(Side side, std::vector<Level>& levels, double tick_size) const {
     for (Level& level : levels) {
         const long long ticks = PriceToTicks(level.price, tick_size);
-        const auto it = levels_.find(ImpactKey{side, ticks});
-        if (it == levels_.end()) {
+        const EatenLevel* eaten = Find(side, ticks);
+        if (eaten == nullptr) {
             continue;
         }
-        const double left = static_cast<double>(level.qty) - it->second.eaten;
+        const double left = static_cast<double>(level.qty) - eaten->eaten;
         level.qty = left > 0.0 ? static_cast<std::uint64_t>(left) : 0;
     }
     levels.erase(std::remove_if(levels.begin(), levels.end(),
@@ -83,17 +105,20 @@ void ImpactState::OnFill(Side order_side, long long price_ticks, std::uint64_t q
         return;
     }
     const Side book_side = (order_side == Side::Buy) ? Side::Sell : Side::Buy;
-    LevelState& st = levels_[ImpactKey{book_side, price_ticks}];
-    st.eaten += static_cast<double>(qty);
-    st.t_last_ns = t_ns;
+    if (levels_.capacity() < kMaxEatenLevels) {
+        levels_.reserve(kMaxEatenLevels);
+    }
+    if (EatenLevel* st = Find(book_side, price_ticks)) {
+        st->eaten += static_cast<double>(qty);
+        st->t_last_ns = t_ns;
+        return;
+    }
+    levels_.push_back(EatenLevel{book_side, price_ticks, static_cast<double>(qty), t_ns});
 }
 
 double ImpactState::EatenAt(Side side, long long price_ticks) const {
-    const auto it = levels_.find(ImpactKey{side, price_ticks});
-    if (it == levels_.end()) {
-        return 0.0;
-    }
-    return it->second.eaten;
+    const EatenLevel* eaten = Find(side, price_ticks);
+    return eaten == nullptr ? 0.0 : eaten->eaten;
 }
 
 }  // namespace population

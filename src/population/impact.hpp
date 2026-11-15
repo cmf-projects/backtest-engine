@@ -4,28 +4,9 @@
 #include "population/types.hpp"
 
 #include <cstdint>
-#include <unordered_map>
 #include <vector>
 
 namespace population {
-
-struct ImpactKey {
-    Side side = Side::Unknown;
-    long long price_ticks = 0;
-
-    [[nodiscard]] bool operator==(const ImpactKey& other) const noexcept {
-        return side == other.side && price_ticks == other.price_ticks;
-    }
-};
-
-struct ImpactKeyHash {
-    [[nodiscard]] std::size_t operator()(const ImpactKey& key) const noexcept {
-        std::size_t h = std::hash<long long>{}(key.price_ticks);
-        // boost::hash_combine(h, side)
-        h ^= static_cast<std::size_t>(key.side) + 0x9e3779b9u + (h << 6) + (h >> 2);
-        return h;
-    }
-};
 
 // Per-slot eaten liquidity. λ == 0 → all ops no-op (impact off).
 class ImpactState {
@@ -50,15 +31,22 @@ public:
     [[nodiscard]] double EatenAt(Side side, long long price_ticks) const;
 
 private:
-    struct LevelState {
+    struct EatenLevel {
+        Side side = Side::Unknown;
+        long long price_ticks = 0;
         double eaten = 0.0;
         std::uint64_t t_last_ns = 0;
     };
 
+    // One reserve covers both sides of a 64-level book. No later reallocation.
+    static constexpr std::size_t kMaxEatenLevels = kMaxLevelsPerSide * 2;
+
     void ApplySide(Side side, std::vector<Level>& levels, double tick_size) const;
+    [[nodiscard]] EatenLevel* Find(Side side, long long price_ticks);
+    [[nodiscard]] const EatenLevel* Find(Side side, long long price_ticks) const;
 
     double lambda_ = 0.0;
-    std::unordered_map<ImpactKey, LevelState, ImpactKeyHash> levels_;
+    std::vector<EatenLevel> levels_;
 };
 
 }  // namespace population
