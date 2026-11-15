@@ -223,33 +223,27 @@ void Population::Start() {
     started_ = true;
 }
 
-const SnapshotEvent& Population::ViewSnap(const SlotConfig& cfg,
+const SnapshotEvent* Population::ViewSnap(const SlotConfig& cfg,
                                           const Component& component) const {
     const std::uint64_t pop = clock_.pop_ts_ns();
-    const std::uint64_t view_ts =
-        (cfg.md_lag_ns >= pop) ? 0 : (pop - cfg.md_lag_ns);
-
-    if (const SnapshotEvent* snap = component.window().AtOrBefore(view_ts)) {
-        return *snap;
+    // view_ts would be before the dataset. A snap at 0 is not visible yet.
+    if (cfg.md_lag_ns > pop || component.window().empty()) {
+        return nullptr;
     }
-    // Warm-up: lag reaches before SnapshotFloor → clamp to oldest kept snap.
-    if (component.window().empty()) {
-        throw std::logic_error("population: ViewSnap on empty TapeWindow");
-    }
-    const SnapshotEvent* floor =
-        component.window().AtOrBefore(component.window().floor_ts_ns());
-    if (floor == nullptr) {
-        throw std::logic_error("population: TapeWindow floor missing");
-    }
-    return *floor;
+    return component.window().AtOrBefore(pop - cfg.md_lag_ns);
 }
 
-void Population::EffectiveViewInto(const SlotConfig& cfg, const Component& component,
+bool Population::EffectiveViewInto(const SlotConfig& cfg, const Component& component,
                                    SnapshotEvent& out) const {
     // TZ §8.4 P0: old file snap @ view_ts, minus *current* eaten (not historical).
-    AssignSnapshot(out, ViewSnap(cfg, component));
+    const SnapshotEvent* snap = ViewSnap(cfg, component);
+    if (snap == nullptr) {
+        return false;
+    }
+    AssignSnapshot(out, *snap);
     slot_impact_.at(SlotComponentKey{cfg.slot_id, component.component_id()})
         .ApplyTo(out.bids, out.asks, component.tick_size());
+    return true;
 }
 
 void Population::TrimWindowForLags() {
@@ -338,18 +332,24 @@ bool Population::SeedSharedFirstTick() {
         std::vector<Level> bids;
         std::vector<Level> asks;
     };
-    auto capture = [&](const SlotConfig& cfg, const Component& component, Sides& out) {
+    auto capture = [&](const SlotConfig& cfg, const Component& component, Sides& out) -> bool {
         const ImpactState& impact =
             slot_impact_.at(SlotComponentKey{cfg.slot_id, component.component_id()});
         if (!impact.enabled()) {
-            const SnapshotEvent& snap = ViewSnap(cfg, component);
-            out.bids = snap.bids;
-            out.asks = snap.asks;
-            return;
+            const SnapshotEvent* snap = ViewSnap(cfg, component);
+            if (snap == nullptr) {
+                return false;
+            }
+            out.bids = snap->bids;
+            out.asks = snap->asks;
+            return true;
         }
-        EffectiveViewInto(cfg, component, view_scratch_);
+        if (!EffectiveViewInto(cfg, component, view_scratch_)) {
+            return false;
+        }
         out.bids = view_scratch_.bids;
         out.asks = view_scratch_.asks;
+        return true;
     };
 
     std::vector<SharedBookView> shared;
@@ -358,11 +358,13 @@ bool Population::SeedSharedFirstTick() {
             continue;
         }
         Sides seed;
-        capture(slots_.front(), component, seed);
+        if (!capture(slots_.front(), component, seed)) {
+            return false;
+        }
         for (std::size_t si = 1; si < slots_.size(); ++si) {
             Sides other;
-            capture(slots_[si], component, other);
-            if (!SameLevels(seed.bids, other.bids) || !SameLevels(seed.asks, other.asks)) {
+            if (!capture(slots_[si], component, other) ||
+                !SameLevels(seed.bids, other.bids) || !SameLevels(seed.asks, other.asks)) {
                 return false;
             }
         }
@@ -437,11 +439,16 @@ const TickView& Population::MakeTick() {
             const std::vector<Level>* view_bids = nullptr;
             const std::vector<Level>* view_asks = nullptr;
             if (!impact.enabled()) {
-                const SnapshotEvent& file_view = ViewSnap(cfg, component);
-                view_bids = &file_view.bids;
-                view_asks = &file_view.asks;
+                const SnapshotEvent* file_view = ViewSnap(cfg, component);
+                if (file_view == nullptr) {
+                    continue;
+                }
+                view_bids = &file_view->bids;
+                view_asks = &file_view->asks;
             } else {
-                EffectiveViewInto(cfg, component, view_scratch_);
+                if (!EffectiveViewInto(cfg, component, view_scratch_)) {
+                    continue;
+                }
                 view_bids = &view_scratch_.bids;
                 view_asks = &view_scratch_.asks;
             }

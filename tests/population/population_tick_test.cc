@@ -52,7 +52,7 @@ std::vector<Level> BidLadder(long long top_ticks, int n, std::uint64_t qty) {
 
 }  // namespace
 
-TEST(PopulationTick, FirstTickIsSharedKeyframe) {
+TEST(PopulationTick, LagHidesBookSoFirstTickIsNotShared) {
     auto tape = std::make_unique<FakeTape>(std::vector<SnapshotEvent>{
         Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
         Ev(2, 200, {{100.0, 8}}, {{101.0, 5}}),
@@ -65,12 +65,12 @@ TEST(PopulationTick, FirstTickIsSharedKeyframe) {
 
     const auto tick = pop.MakeTick();
     EXPECT_EQ(tick.pop_ts_ns, 100u);
-    ASSERT_EQ(tick.books.size(), 1u);
-    EXPECT_EQ(tick.books[0].component_id, "C1");
-    EXPECT_EQ(tick.books[0].kind, BookPatchKind::Keyframe);
-    EXPECT_EQ(tick.books[0].bids[0].qty, 10u);
+    // Slot 2 cannot see t-100 yet, so the first snap is not shared.
+    EXPECT_TRUE(tick.books.empty());
     ASSERT_EQ(tick.slots.size(), 2u);
-    EXPECT_EQ(tick.slots[0].n_books, 0u);
+    ASSERT_EQ(tick.slots[0].n_books, 1u);
+    EXPECT_EQ(tick.slots[0].books[0].kind, BookPatchKind::Keyframe);
+    EXPECT_EQ(tick.slots[0].books[0].bids[0].qty, 10u);
     EXPECT_EQ(tick.slots[1].n_books, 0u);
 }
 
@@ -110,7 +110,7 @@ TEST(PopulationTick, MdLagSlotsSeeDifferentBooks) {
     };
     Population pop("C1", 0.01, std::move(tape), std::move(slots));
     pop.Start();
-    (void)pop.MakeTick();  // both keyframe @100 (lag slot clamps to floor)
+    (void)pop.MakeTick();  // pop=100: slot2's view is before the tape
 
     ASSERT_TRUE(pop.Advance());  // pop=200
     {
@@ -120,8 +120,10 @@ TEST(PopulationTick, MdLagSlotsSeeDifferentBooks) {
         ASSERT_EQ(tick.slots[0].n_books, 1u);
         EXPECT_EQ(tick.slots[0].books[0].kind, BookPatchKind::Diff);
         EXPECT_EQ(tick.slots[0].books[0].bids[0].qty, 8u);
-        // slot2 view@100: still qty 10 → no patch
-        EXPECT_EQ(tick.slots[1].n_books, 0u);
+        // slot2 view@100: first book it is allowed to see
+        ASSERT_EQ(tick.slots[1].n_books, 1u);
+        EXPECT_EQ(tick.slots[1].books[0].kind, BookPatchKind::Keyframe);
+        EXPECT_EQ(tick.slots[1].books[0].bids[0].qty, 10u);
     }
 
     ASSERT_TRUE(pop.Advance());  // pop=300
@@ -147,7 +149,7 @@ TEST(PopulationTick, MdLagAppliesCurrentImpactToOldFileSnap) {
                    {SlotConfig{.slot_id = 1, .md_lag_ns = 100, .delta_ns = 1,
                                .impact_lambda = lambda}});
     pop.Start();
-    (void)pop.MakeTick();  // pop=100, view clamps to floor ask=10 keyframe
+    EXPECT_EQ(pop.MakeTick().slots[0].n_books, 0u);  // pop=100, lag hides the book
 
     OrderBatch batch;
     batch.orders.push_back(NewOrder{
@@ -163,13 +165,14 @@ TEST(PopulationTick, MdLagAppliesCurrentImpactToOldFileSnap) {
 
     ASSERT_TRUE(pop.Advance());  // pop=200 → fill @ ask; eaten=4
     const auto tick = pop.MakeTick();
+    // First visible book, and the only slot sees it: shared keyframe.
     // view_ts=100: file ask still 10, current eaten 4 → effective 6
-    ASSERT_EQ(tick.slots.size(), 1u);
-    ASSERT_EQ(tick.slots[0].n_books, 1u);
-    EXPECT_EQ(tick.slots[0].books[0].kind, BookPatchKind::Diff);
-    ASSERT_FALSE(tick.slots[0].books[0].asks.empty());
-    EXPECT_DOUBLE_EQ(tick.slots[0].books[0].asks[0].price, 101.0);
-    EXPECT_EQ(tick.slots[0].books[0].asks[0].qty, 6u);
+    ASSERT_EQ(tick.books.size(), 1u);
+    EXPECT_EQ(tick.books[0].kind, BookPatchKind::Keyframe);
+    ASSERT_FALSE(tick.books[0].asks.empty());
+    EXPECT_DOUBLE_EQ(tick.books[0].asks[0].price, 101.0);
+    EXPECT_EQ(tick.books[0].asks[0].qty, 6u);
+    EXPECT_EQ(tick.slots[0].n_books, 0u);
 }
 
 TEST(PopulationTick, FixedStepHoldsBookUntilDatasetEvent) {

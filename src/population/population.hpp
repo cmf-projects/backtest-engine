@@ -125,10 +125,13 @@ private:
     [[nodiscard]] bool HasComponent(const std::string& component_id) const;
     [[nodiscard]] Component* MutableComponent(const std::string& component_id);
     [[nodiscard]] const SlotConfig* FindSlot(std::uint32_t slot_id) const;
-    [[nodiscard]] const SnapshotEvent& ViewSnap(const SlotConfig& cfg,
+    // nullptr while t - md_lag is before the first snapshot. No warm-up clamp.
+    [[nodiscard]] const SnapshotEvent* ViewSnap(const SlotConfig& cfg,
                                                 const Component& component) const;
-    void EffectiveViewInto(const SlotConfig& cfg, const Component& component,
-                           SnapshotEvent& out) const;
+    // False when ViewSnap is empty. Otherwise writes the lagged file book minus
+    // this slot's current eaten.
+    [[nodiscard]] bool EffectiveViewInto(const SlotConfig& cfg, const Component& component,
+                                         SnapshotEvent& out) const;
     void ApplyMergedStep(const MergedStep& step);
     void TrimWindowForLags();
     void MatchDueIfNeeded();
