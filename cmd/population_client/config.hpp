@@ -16,9 +16,13 @@ struct Config {
     std::string class_code = "TQBR";
     std::string sec_code = "SBER";
     std::string tick_size = "0.01";
-    std::uint64_t md_lag_ns = 0;
-    std::uint64_t delta_ns = 1;
+    std::uint64_t md_lag_ns = 60'000'000;
+    // Order-channel delay: a decision at pop_ts becomes matchable at pop_ts + delta.
+    std::uint64_t delta_ns = 30'000'000;
+    // Clock step. -1 follows dataset timestamps.
+    std::int64_t step_ns = 100'000'000;
     std::string impact_lambda = "1e-15";
+    int order_every_ticks = 8;
 
     bool ok = true;
 };

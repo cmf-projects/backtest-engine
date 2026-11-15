@@ -160,10 +160,14 @@ PopulationSession::Step PopulationSession::OnOpen(const std::vector<std::uint8_t
                 throw std::runtime_error("tick_size does not divide 1");
             }
             tick_sizes_[component.component_id] = tick_size;
+            LOG_INFO("loading dataset component={} path={} symbol={}", component.component_id,
+                     component.dataset_path, component.sec_code);
             auto tape = MakeTape(component);
             if (tape == nullptr) {
                 throw std::runtime_error("make_tape returned null");
             }
+            LOG_INFO("dataset loaded component={} symbol={} start_ts={}", component.component_id,
+                     tape->FirstSymbol(), tape->StartTs());
             specs.push_back(population::ComponentSpec{.component_id = component.component_id,
                                                       .tick_size = tick_size,
                                                       .tape = std::move(tape)});
@@ -175,7 +179,11 @@ PopulationSession::Step PopulationSession::OnOpen(const std::vector<std::uint8_t
                                                         ToSlotConfigs(open.slots));
         pop_->SetStepNs(open.step_ns);
         pop_->Start();
+        LOG_INFO("population started pop_ts={} components={} step_ns={} delta_ns={}",
+                 pop_->clock().pop_ts_ns(), open.components.size(), open.step_ns,
+                 open.slots.empty() ? 0 : open.slots.front().delta_ns);
     } catch (const std::exception& ex) {
+        LOG_ERROR("open failed: {}", ex.what());
         const std::string msg = ex.what();
         EncodeBusOpenAckInto(
             MakeBusOpenReject(cfg_.population_id, ErrorCode::Internal, msg), encode_buf_);

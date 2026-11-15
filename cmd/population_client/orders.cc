@@ -70,15 +70,19 @@ void NoteTrades(const transport::BusTick& tick, DensePending& pending, RunStats&
     }
 }
 
-void MakeTakeBatch(const transport::BusTick& tick, std::uint64_t& next_oid, DensePending& pending,
-                   transport::BusOrderBatch& batch,
+void MakeTakeBatch(const transport::BusTick& tick, int tick_n, int order_every,
+                   std::uint64_t& next_oid, DensePending& pending, transport::BusOrderBatch& batch,
                    std::vector<const transport::BusBookUpdate*>& books) {
     batch.orders.clear();
     batch.cancels.clear();
+    if (order_every < 1 || tick_n % order_every != 0) {
+        return;
+    }
     CollectBooks(tick, books);
     if (books.empty()) {
         return;
     }
+    const bool buy_ask = ((tick_n / order_every) % 2) == 0;
     const std::uint32_t slot_id = tick.slots.empty() ? 1u : tick.slots[0].slot_id;
 
     auto push = [&](BusSide side, const transport::BusBookUpdate& book, const transport::BusPrice& px) {
@@ -106,10 +110,11 @@ void MakeTakeBatch(const transport::BusTick& tick, std::uint64_t& next_oid, Dens
         if (book == nullptr) {
             continue;
         }
-        if (!book->asks.empty() && book->asks[0].qty > 0 && price_ok(book->asks[0].price)) {
-            push(BusSide::Buy, *book, book->asks[0].price);
-        }
-        if (!book->bids.empty() && book->bids[0].qty > 0 && price_ok(book->bids[0].price)) {
+        if (buy_ask) {
+            if (!book->asks.empty() && book->asks[0].qty > 0 && price_ok(book->asks[0].price)) {
+                push(BusSide::Buy, *book, book->asks[0].price);
+            }
+        } else if (!book->bids.empty() && book->bids[0].qty > 0 && price_ok(book->bids[0].price)) {
             push(BusSide::Sell, *book, book->bids[0].price);
         }
     }

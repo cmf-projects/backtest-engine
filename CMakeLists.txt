@@ -164,15 +164,20 @@ target_compile_definitions(population_venue_lib
     SPDLOG_ACTIVE_LEVEL=${CMF_SPDLOG_ACTIVE_LEVEL}
     CMF_LOG_FORMAT_JSON=${CMF_LOG_FORMAT_JSON})
 
-add_executable(population_venue apps/population_venue/main.cc)
+add_executable(population_venue cmd/population_venue/main.cc)
 target_link_libraries(population_venue PRIVATE cmf::population_venue)
 
 # Same-process smoke: UDS create + shared QueueRegistry tick loop.
-add_executable(population_smoke apps/population_smoke/main.cc)
+add_executable(population_smoke cmd/population_smoke/main.cc)
 target_link_libraries(population_smoke PRIVATE cmf::transport)
 
-add_executable(population_client apps/population_client/main.cc)
-target_link_libraries(population_client PRIVATE cmf::transport)
+add_executable(population_client
+  cmd/population_client/main.cc
+  cmd/population_client/config.cc
+  cmd/population_client/orders.cc
+  cmd/population_client/session.cc
+  cmd/population_client/run.cc)
+target_link_libraries(population_client PRIVATE cmf::population_venue tomlplusplus::tomlplusplus)
 
 # ---------------------------------------------------------------------------
 # Tests (GoogleTest) — population + transport

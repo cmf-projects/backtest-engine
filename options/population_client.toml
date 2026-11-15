@@ -12,6 +12,13 @@ class_code = "TQBR"
 sec_code = "SBER"
 tick_size = "0.01"
 
-md_lag_ns = 0
-delta_ns = 1
+# Book the slot sees is pop_ts - md_lag. 60ms.
+md_lag_ns = 60000000
+# Order delay: a new order is matchable at pop_ts + delta_ns. 30ms.
+delta_ns = 30000000
+# Clock step. 100ms. -1 would follow dataset timestamps instead.
+step_ns = 100000000
 impact_lambda = "1e-15"
+# One dataset is opened as SPOT, FUT and OPT. Send an IOC on best bid or best ask
+# once per this many ticks.
+order_every_ticks = 8

@@ -1,3 +1,4 @@
+#include "population_venue/log/log.hpp"
 #include "session.hpp"
 
 #include "transport/bus_framing.hpp"
@@ -5,7 +6,9 @@
 
 #include <chrono>
 #include <cstdint>
+#include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 using transport::AckStatus;
@@ -43,6 +46,23 @@ namespace {
         std::this_thread::yield();
     }
     return false;
+}
+
+void NoteBookComponents(const BusTick& tick, std::unordered_set<std::string>& seen) {
+    auto note = [&](const std::string& id) {
+        if (id.empty() || !seen.insert(id).second) {
+            return;
+        }
+        LOG_INFO("book component={}", id);
+    };
+    for (std::uint32_t i = 0; i < tick.n_books; ++i) {
+        note(tick.books[i].component_id);
+    }
+    for (const auto& slot : tick.slots) {
+        for (std::uint32_t i = 0; i < slot.n_books; ++i) {
+            note(slot.books[i].component_id);
+        }
+    }
 }
 
 }  // namespace
@@ -95,6 +115,7 @@ bool RunPopulationLoop(PopHandle& pop, const Config& cfg, EndedHub& hub) {
     }
 
     std::uint64_t next_oid = 1;
+    std::unordered_set<std::string> seen_books;
     DensePending pending;
     pending.Reserve(32'768);
     BusTick tick;
@@ -130,9 +151,11 @@ bool RunPopulationLoop(PopHandle& pop, const Config& cfg, EndedHub& hub) {
             return false;
         }
         ++pop.stats.ticks;
+        NoteBookComponents(tick, seen_books);
         NoteTrades(tick, pending, pop.stats);
 
-        MakeTakeBatch(tick, next_oid, pending, batch, books);
+        MakeTakeBatch(tick, pop.stats.ticks, cfg.order_every_ticks, next_oid, pending, batch,
+                      books);
         if (!batch.orders.empty()) {
             pop.stats.orders_sent += static_cast<int>(batch.orders.size());
             EncodeBusOrderBatchInto(batch, encode_buf);
@@ -173,6 +196,12 @@ bool RunPopulationLoop(PopHandle& pop, const Config& cfg, EndedHub& hub) {
     if (pop.stats.ticks < 1) {
         pop.error = "no ticks";
         return false;
+    }
+    for (const char* id : {"SPOT", "FUT", "OPT"}) {
+        if (!seen_books.count(id)) {
+            pop.error = std::string("no book events for ") + id;
+            return false;
+        }
     }
     pop.ok = true;
     return true;

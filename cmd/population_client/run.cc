@@ -84,7 +84,7 @@ int Run(const Config& cfg) {
     }
     control.join();
 
-    const auto wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+    const auto wall_us = std::chrono::duration_cast<std::chrono::microseconds>(
                              std::chrono::steady_clock::now() - t0)
                              .count();
 
@@ -108,8 +108,9 @@ int Run(const Config& cfg) {
                  pop.stats.cancels, min_d, avg, pop.stats.max_fill_delay_ns);
     }
 
-    LOG_INFO("summary pops_ok={}/{} ticks={} fills={} wall_ms={}", ok_n, cfg.n_pops, ticks, fills,
-             wall_ms);
+    const double ticks_per_s = wall_us > 0 ? (static_cast<double>(ticks) * 1'000'000.0) / wall_us : 0.0;
+    LOG_INFO("summary pops_ok={}/{} ticks={} fills={} wall_ms={:.1f} ticks_per_s={:.0f}", ok_n,
+             cfg.n_pops, ticks, fills, wall_us / 1000.0, ticks_per_s);
     return ok_n == cfg.n_pops ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 

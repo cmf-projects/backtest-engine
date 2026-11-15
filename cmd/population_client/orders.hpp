@@ -60,9 +60,9 @@ struct RunStats {
 
 void NoteTrades(const transport::BusTick& tick, DensePending& pending, RunStats& stats);
 
-// Buy the best ask and sell the best bid, both IOC, on every live book.
-void MakeTakeBatch(const transport::BusTick& tick, std::uint64_t& next_oid, DensePending& pending,
-                   transport::BusOrderBatch& batch,
+// Every `order_every` ticks, IOC one side: best ask or best bid, on each live book.
+void MakeTakeBatch(const transport::BusTick& tick, int tick_n, int order_every,
+                   std::uint64_t& next_oid, DensePending& pending, transport::BusOrderBatch& batch,
                    std::vector<const transport::BusBookUpdate*>& books);
 
 }  // namespace client

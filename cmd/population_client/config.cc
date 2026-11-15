@@ -60,6 +60,12 @@ void ApplyToml(const toml::table& table, Config& cfg) {
     cfg.sec_code = TomlString(table, "sec_code", cfg.sec_code);
     cfg.tick_size = TomlString(table, "tick_size", cfg.tick_size);
     cfg.impact_lambda = TomlString(table, "impact_lambda", cfg.impact_lambda);
+    if (const auto* every = table["order_every_ticks"].as_integer()) {
+        if (every->get() < 1) {
+            throw std::runtime_error("toml: order_every_ticks must be an integer >= 1");
+        }
+        cfg.order_every_ticks = static_cast<int>(every->get());
+    }
     if (const auto* n_pops = table["n_pops"].as_integer()) {
         if (n_pops->get() < 1 || n_pops->get() > 100000) {
             throw std::runtime_error("toml: n_pops must be an integer >= 1");
@@ -78,6 +84,12 @@ void ApplyToml(const toml::table& table, Config& cfg) {
         }
         cfg.delta_ns = static_cast<std::uint64_t>(delta->get());
     }
+    if (const auto* step = table["step_ns"].as_integer()) {
+        if (step->get() == 0 || step->get() < -1) {
+            throw std::runtime_error("toml: step_ns must be -1 or > 0");
+        }
+        cfg.step_ns = step->get();
+    }
 }
 
 void ApplyEnv(Config& cfg) {
@@ -86,6 +98,9 @@ void ApplyEnv(Config& cfg) {
     cfg.sec_code = EnvOr("POPULATION_SEC_CODE", cfg.sec_code);
     cfg.tick_size = EnvOr("POPULATION_TICK_SIZE", cfg.tick_size);
     cfg.impact_lambda = EnvOr("POPULATION_IMPACT_LAMBDA", cfg.impact_lambda);
+    if (const char* every = Env("POPULATION_ORDER_EVERY")) {
+        cfg.order_every_ticks = static_cast<int>(ParseInt(every, "POPULATION_ORDER_EVERY", 1));
+    }
     if (const char* pops = Env("CLIENT_POPS")) {
         cfg.n_pops = static_cast<int>(ParseInt(pops, "CLIENT_POPS", 1));
     }
@@ -121,6 +136,9 @@ void Validate(const Config& cfg) {
     if (cfg.delta_ns < 1) {
         throw std::runtime_error("config: delta_ns must be >= 1");
     }
+    if (cfg.step_ns == 0 || cfg.step_ns < -1) {
+        throw std::runtime_error("config: step_ns must be -1 or > 0");
+    }
 }
 
 }  // namespace
@@ -140,22 +158,34 @@ Config ParseConfig(int argc, char** argv) {
     ApplyArgv(cfg, argc, argv);
     Validate(cfg);
 
-    LOG_INFO("uds={} dataset={} sec={} tick={} lambda={} pops={}", cfg.uds_path, cfg.dataset,
-             cfg.sec_code, cfg.tick_size, cfg.impact_lambda, cfg.n_pops);
+    LOG_INFO("uds={} dataset={} sec={} tick={} lambda={} pops={} order_every={} step_ns={} delta_ns={}",
+             cfg.uds_path, cfg.dataset, cfg.sec_code, cfg.tick_size, cfg.impact_lambda, cfg.n_pops,
+             cfg.order_every_ticks, cfg.step_ns, cfg.delta_ns);
     return cfg;
 }
 
 BusOpen MakeOpen(const std::string& population_id, const Config& cfg) {
     BusOpen open;
     open.population_id = population_id;
-    open.components.push_back(BusComponent{
-        .component_id = cfg.component_id,
-        .role = BusAssetRole::Spot,
+    open.step_ns = cfg.step_ns;
+    // One dataset, three tapes. The venue reads the path once per component.
+    const BusComponent leg{
+        .component_id = {},
+        .role = BusAssetRole::Unspecified,
         .dataset_path = cfg.dataset,
         .class_code = cfg.class_code,
         .sec_code = cfg.sec_code,
         .tick_size = cfg.tick_size,
-    });
+    };
+    auto add = [&](const char* id, BusAssetRole role) {
+        BusComponent component = leg;
+        component.component_id = id;
+        component.role = role;
+        open.components.push_back(std::move(component));
+    };
+    add("SPOT", BusAssetRole::Spot);
+    add("FUT", BusAssetRole::Future);
+    add("OPT", BusAssetRole::Option);
     open.slots.push_back(BusSlotConfig{
         .slot_id = 1,
         .md_lag_ns = cfg.md_lag_ns,
