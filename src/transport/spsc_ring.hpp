@@ -10,11 +10,16 @@
 // - Full → TryPush false (no overwrite). Empty → TryPop false.
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
 
 namespace transport {
+
+void FutexWake(std::uint32_t* addr) noexcept;
+void FutexWait(std::uint32_t* addr, std::uint32_t expected,
+               std::chrono::steady_clock::time_point deadline) noexcept;
 
 // Fixed like third_party/ipc.h — not std::hardware_destructive_interference_size
 // (that value is ABI-unstable across -mtune / toolchains).
@@ -43,6 +48,7 @@ public:
         }
         slots_[head] = item;
         head_.store(next, std::memory_order_release);
+        Notify();
         return true;
     }
 
@@ -54,7 +60,28 @@ public:
         }
         out = slots_[tail];
         tail_.store((tail + 1) & kMask, std::memory_order_release);
+        Notify();
         return true;
+    }
+
+    // Sleep until Notify(), or until deadline. Safe to call when the ring is empty
+    // or full: a push or pop wakes the other side.
+    void Wait(std::chrono::steady_clock::time_point deadline) noexcept {
+        const std::uint32_t seen = wake_.load(std::memory_order_acquire);
+        waiting_.store(1, std::memory_order_release);
+        if (wake_.load(std::memory_order_acquire) != seen) {
+            waiting_.store(0, std::memory_order_release);
+            return;
+        }
+        FutexWait(reinterpret_cast<std::uint32_t*>(&wake_), seen, deadline);
+        waiting_.store(0, std::memory_order_release);
+    }
+
+    void Notify() noexcept {
+        wake_.fetch_add(1, std::memory_order_release);
+        if (waiting_.load(std::memory_order_acquire) != 0) {
+            FutexWake(reinterpret_cast<std::uint32_t*>(&wake_));
+        }
     }
 
     [[nodiscard]] bool empty() const noexcept {
@@ -68,6 +95,8 @@ private:
     // One slot is always left free to distinguish full from empty.
     alignas(kCacheLineSize) std::atomic<std::size_t> head_{0};
     alignas(kCacheLineSize) std::atomic<std::size_t> tail_{0};
+    alignas(kCacheLineSize) std::atomic<std::uint32_t> wake_{0};
+    std::atomic<std::uint32_t> waiting_{0};
     T slots_[Capacity]{};
 };
 

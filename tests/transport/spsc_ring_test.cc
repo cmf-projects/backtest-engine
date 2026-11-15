@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdint>
 #include <thread>
 #include <vector>
@@ -69,4 +70,33 @@ TEST(SpscRing, TwoThreadsTransfer) {
     for (std::uint64_t i = 0; i < n; ++i) {
         EXPECT_EQ(got[i], i);
     }
+}
+
+TEST(SpscRing, WaitWakesOnPush) {
+    SpscRing<int, 8> q;
+    int got = -1;
+    std::thread consumer([&] {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (std::chrono::steady_clock::now() < deadline) {
+            int v = 0;
+            if (q.TryPop(v)) {
+                got = v;
+                return;
+            }
+            q.Wait(deadline);
+        }
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    ASSERT_TRUE(q.TryPush(7));
+    consumer.join();
+    EXPECT_EQ(got, 7);
+}
+
+TEST(SpscRing, WaitTimesOutWhenIdle) {
+    SpscRing<int, 8> q;
+    const auto started = std::chrono::steady_clock::now();
+    q.Wait(started + std::chrono::milliseconds(50));
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    EXPECT_GE(elapsed, std::chrono::milliseconds(40));
+    EXPECT_LT(elapsed, std::chrono::milliseconds(500));
 }

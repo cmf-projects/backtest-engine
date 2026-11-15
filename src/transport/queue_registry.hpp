@@ -69,6 +69,19 @@ public:
         return MakeCreateOk(population_id, raw->out_name, raw->in_name);
     }
 
+    // Wake sessions parked on these rings (empty in-queue, or a full out-queue).
+    void WakeAll() {
+        std::lock_guard lock(mu_);
+        for (auto& [_, pair] : by_pop_) {
+            if (pair->in.get() != nullptr) {
+                pair->in->Notify();
+            }
+            if (pair->out.get() != nullptr) {
+                pair->out->Notify();
+            }
+        }
+    }
+
     [[nodiscard]] bool Destroy(const std::string& population_id) {
         std::lock_guard lock(mu_);
         const auto it = by_pop_.find(population_id);

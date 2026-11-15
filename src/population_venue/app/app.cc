@@ -57,13 +57,14 @@ void AbortPopulationSession(transport::UdsConn& conn, transport::QueueRegistry& 
 
 void RunPopulationSession(transport::UdsConn& conn, transport::QueueRegistry& registry,
                           std::string population_id, std::uint32_t drain_timeout_ms,
-                          std::atomic<bool>* shutdown) {
+                          std::atomic<bool>* shutdown, std::atomic<bool>* conn_stop) {
     const std::string id = population_id;
     try {
         transport::SessionConfig session_cfg;
         session_cfg.population_id = std::move(population_id);
         session_cfg.drain_timeout_ms = drain_timeout_ms;
         session_cfg.shutdown = shutdown;
+        session_cfg.conn_stop = conn_stop;
 
         transport::PopulationSession session(conn, registry, std::move(session_cfg));
         const auto finished = session.Run();
@@ -157,6 +158,7 @@ int App::Run() {
             UdsConn conn(raw);
             QueueRegistry registry;
             std::vector<std::thread> sessions;
+            std::atomic<bool> conn_stop{false};
             LOG_INFO("engine connected");
 
             while (conn.valid() && !StopRequested()) {
@@ -182,8 +184,14 @@ int App::Run() {
                 LOG_INFO("start population_id={}", ack.population_id);
 
                 sessions.emplace_back(RunPopulationSession, std::ref(conn), std::ref(registry),
-                                      ack.population_id, cfg_.drain_timeout_ms, &shutdown);
+                                      ack.population_id, cfg_.drain_timeout_ms, &shutdown,
+                                      &conn_stop);
             }
+
+            // Control socket is done (EOF or venue stop). Wake every session of
+            // this connection so they do not sit out drain_timeout.
+            conn_stop.store(true, std::memory_order_relaxed);
+            registry.WakeAll();
 
             if (StopRequested() && !sessions.empty()) {
                 LOG_INFO("shutdown — waiting for {} session(s)", sessions.size());

@@ -40,13 +40,21 @@ public:
     [[nodiscard]] bool TrySend(BusMsgType type, const std::vector<std::uint8_t>& payload);
 
     // Same split. When the ring is full, wait for the reader until `deadline`.
-    // `stop` set, or the deadline, fails the send; bytes already pushed stay.
+    // Either stop flag, or the deadline, fails the send; bytes already pushed stay.
     [[nodiscard]] bool TrySend(BusMsgType type, const std::vector<std::uint8_t>& payload,
                                std::chrono::steady_clock::time_point deadline,
-                               const std::atomic<bool>* stop = nullptr);
+                               const std::atomic<bool>* stop = nullptr,
+                               const std::atomic<bool>* stop_also = nullptr);
 
     // Reassembles fragments. Protocol violations → ProtocolError (not silent skip).
     [[nodiscard]] BusRecvResult TryRecv(BusMsgType& type, std::vector<std::uint8_t>& payload);
+
+    // Park until the peer pushes or pops, or until deadline.
+    void Wait(std::chrono::steady_clock::time_point deadline) noexcept {
+        if (queue_ != nullptr) {
+            queue_->Wait(deadline);
+        }
+    }
 
 private:
     [[nodiscard]] bool PushSlot(BusMsgType type, std::uint8_t flags, std::uint32_t total,

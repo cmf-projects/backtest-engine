@@ -20,9 +20,11 @@ namespace {
 
 bool WaitProgress(SpscBus& in, BusMsgType& type, std::vector<std::uint8_t>& payload,
                   std::chrono::steady_clock::time_point deadline, BusRecvResult& result,
-                  std::atomic<bool>* shutdown) {
+                  std::atomic<bool>* shutdown, std::atomic<bool>* conn_stop) {
     while (std::chrono::steady_clock::now() < deadline) {
-        if (shutdown != nullptr && shutdown->load(std::memory_order_relaxed)) {
+        const bool stop = (shutdown != nullptr && shutdown->load(std::memory_order_relaxed)) ||
+                          (conn_stop != nullptr && conn_stop->load(std::memory_order_relaxed));
+        if (stop) {
             result = BusRecvResult::Empty;
             return false;
         }
@@ -30,7 +32,12 @@ bool WaitProgress(SpscBus& in, BusMsgType& type, std::vector<std::uint8_t>& payl
         if (result != BusRecvResult::Empty) {
             return true;
         }
-        std::this_thread::yield();
+        if ((shutdown != nullptr && shutdown->load(std::memory_order_relaxed)) ||
+            (conn_stop != nullptr && conn_stop->load(std::memory_order_relaxed))) {
+            result = BusRecvResult::Empty;
+            return false;
+        }
+        in.Wait(deadline);
     }
     result = BusRecvResult::Empty;
     return false;
@@ -49,7 +56,7 @@ PopulationSession::PopulationSession(UdsConn& conn, QueueRegistry& registry, Ses
 }
 
 bool PopulationSession::SendOut(BusMsgType type, const std::vector<std::uint8_t>& payload) {
-    return out_.TrySend(type, payload, StallDeadline(), cfg_.shutdown);
+    return out_.TrySend(type, payload, StallDeadline(), cfg_.shutdown, cfg_.conn_stop);
 }
 
 BusRecvResult PopulationSession::RecvIn(BusMsgType& type, std::vector<std::uint8_t>& payload) {
@@ -238,12 +245,19 @@ FinishSessionStatus PopulationSession::Run() {
     }
 
     for (;;) {
+        if (cfg_.conn_stop != nullptr && cfg_.conn_stop->load(std::memory_order_relaxed)) {
+            return FinishFatal(ErrorCode::Internal, "engine disconnected", false);
+        }
         if (cfg_.shutdown != nullptr && cfg_.shutdown->load(std::memory_order_relaxed)) {
             return FinishFatal(ErrorCode::Internal, "venue shutdown", false);
         }
         BusMsgType type{};
         BusRecvResult got = BusRecvResult::Empty;
-        if (!WaitProgress(in_, type, recv_buf_, StallDeadline(), got, cfg_.shutdown)) {
+        if (!WaitProgress(in_, type, recv_buf_, StallDeadline(), got, cfg_.shutdown,
+                          cfg_.conn_stop)) {
+            if (cfg_.conn_stop != nullptr && cfg_.conn_stop->load(std::memory_order_relaxed)) {
+                return FinishFatal(ErrorCode::Internal, "engine disconnected", false);
+            }
             if (cfg_.shutdown != nullptr && cfg_.shutdown->load(std::memory_order_relaxed)) {
                 return FinishFatal(ErrorCode::Internal, "venue shutdown", false);
             }

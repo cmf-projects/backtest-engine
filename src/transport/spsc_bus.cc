@@ -51,7 +51,7 @@ bool SpscBus::TrySend(BusMsgType type, const std::vector<std::uint8_t>& payload)
 
 bool SpscBus::TrySend(BusMsgType type, const std::vector<std::uint8_t>& payload,
                       std::chrono::steady_clock::time_point deadline,
-                      const std::atomic<bool>* stop) {
+                      const std::atomic<bool>* stop, const std::atomic<bool>* stop_also) {
     if (queue_ == nullptr) {
         return false;
     }
@@ -85,11 +85,12 @@ bool SpscBus::TrySend(BusMsgType type, const std::vector<std::uint8_t>& payload,
         }
 
         while (!PushSlot(type, flags, total, offset, payload.data() + offset, chunk)) {
-            if (!wait || std::chrono::steady_clock::now() >= deadline ||
-                (stop != nullptr && stop->load(std::memory_order_relaxed))) {
+            const bool stopped = (stop != nullptr && stop->load(std::memory_order_relaxed)) ||
+                                 (stop_also != nullptr && stop_also->load(std::memory_order_relaxed));
+            if (!wait || std::chrono::steady_clock::now() >= deadline || stopped) {
                 return false;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            queue_->Wait(deadline);
         }
         offset += chunk;
     }

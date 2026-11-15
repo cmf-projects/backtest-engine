@@ -538,6 +538,12 @@ TEST(PopulationSession, ShutdownFlagFinishesSession) {
 
         // Venue stop while awaiting Order/Advance — should FinishFatal quickly.
         shutdown.store(true);
+        if (auto* q = registry.FindIn(ack.in_queue)) {
+            q->Notify();
+        }
+        if (auto* q = registry.FindOut(ack.out_queue)) {
+            q->Notify();
+        }
         if (!WaitSessionEnded(conn, ended)) {
             return;
         }
@@ -551,6 +557,89 @@ TEST(PopulationSession, ShutdownFlagFinishesSession) {
     EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
     EXPECT_EQ(ended.reason_code, ErrorCode::Internal);
     EXPECT_EQ(ended.message, "venue shutdown");
+    EXPECT_EQ(registry.size(), 0u);
+}
+
+TEST(PopulationSession, ConnStopFinishesWithoutDrain) {
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
+
+    FinishSessionStatus status = FinishSessionStatus::Failed;
+    SessionEnded ended;
+    std::atomic<bool> conn_stop{false};
+
+    auto events = std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(2, 200, {{100.0, 8}}, {{101.0, 5}}),
+    };
+
+    std::thread server([&] {
+        const int raw = listener.AcceptTimeout(5000);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
+            return;
+        }
+        SessionConfig cfg = MakeCfg("pop-disc", std::move(events));
+        cfg.drain_timeout_ms = 5'000;
+        cfg.conn_stop = &conn_stop;
+        PopulationSession session(conn, registry, std::move(cfg));
+        status = session.Run();
+    });
+
+    std::thread client([&] {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        const auto ack = RequestCreateQueues(conn, CreateQueues{.population_id = "pop-disc"});
+        if (ack.status != AckStatus::Ok) {
+            return;
+        }
+
+        SpscBus out(registry.FindOut(ack.out_queue));
+        SpscBus in(registry.FindIn(ack.in_queue));
+
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(MakeTestOpen("pop-disc", 1)))) {
+            return;
+        }
+
+        BusMsgType type{};
+        std::vector<std::uint8_t> payload;
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::OpenAck) {
+            return;
+        }
+        if (!RecvMessage(out, type, payload) || type != BusMsgType::Tick) {
+            return;
+        }
+
+        const auto started = std::chrono::steady_clock::now();
+        conn_stop.store(true);
+        if (auto* q = registry.FindIn(ack.in_queue)) {
+            q->Notify();
+        }
+        if (auto* q = registry.FindOut(ack.out_queue)) {
+            q->Notify();
+        }
+        if (!WaitSessionEnded(conn, ended)) {
+            return;
+        }
+        const auto waited = std::chrono::steady_clock::now() - started;
+        EXPECT_LT(waited, std::chrono::milliseconds(1000));
+        (void)in.TrySend(BusMsgType::Close, EncodeBusClose());
+    });
+
+    server.join();
+    client.join();
+
+    EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
+    EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+    EXPECT_EQ(ended.reason_code, ErrorCode::Internal);
+    EXPECT_EQ(ended.message, "engine disconnected");
     EXPECT_EQ(registry.size(), 0u);
 }
 

@@ -3,18 +3,40 @@
 #include <atomic>
 #include <cerrno>
 #include <charconv>
+#include <chrono>
 #include <new>
 #include <string>
 #include <utility>
 
 #include <dirent.h>
 #include <fcntl.h>
+#include <linux/futex.h>
 #include <signal.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
+#include <time.h>
 #include <unistd.h>
 
 namespace transport {
+
+void FutexWake(std::uint32_t* addr) noexcept {
+    ::syscall(SYS_futex, addr, FUTEX_WAKE, 1, nullptr, nullptr, 0);
+}
+
+void FutexWait(std::uint32_t* addr, std::uint32_t expected,
+               std::chrono::steady_clock::time_point deadline) noexcept {
+    const auto remain = deadline - std::chrono::steady_clock::now();
+    if (remain <= std::chrono::steady_clock::duration::zero()) {
+        return;
+    }
+    const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(remain).count();
+    timespec ts;
+    ts.tv_sec = static_cast<time_t>(ns / 1'000'000'000LL);
+    ts.tv_nsec = static_cast<long>(ns % 1'000'000'000LL);
+    ::syscall(SYS_futex, addr, FUTEX_WAIT, expected, &ts, nullptr, 0);
+}
+
 namespace {
 
 constexpr std::size_t kRingBytes = sizeof(PopulationQueue);

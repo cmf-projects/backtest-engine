@@ -40,6 +40,9 @@ struct SessionConfig {
     std::function<population::TapePtr(const BusComponent&)> make_tape;
     // Optional process stop flag (Ctrl+C). When set, Run() FinishFatal("venue shutdown").
     std::atomic<bool>* shutdown = nullptr;
+    // This control connection is gone (peer closed the UDS). Run() finishes
+    // immediately instead of waiting out drain_timeout.
+    std::atomic<bool>* conn_stop = nullptr;
 };
 
 class PopulationSession {
