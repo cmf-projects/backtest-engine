@@ -77,5 +77,5 @@ TEST(FileBook, AppendsHistoryOnAdvance) {
     EXPECT_EQ(tick.books[0].kind, population::BookPatchKind::Keyframe);
     EXPECT_EQ(tick.books[0].bids[0].qty, 6u);
     ASSERT_EQ(tick.slots.size(), 1u);
-    EXPECT_TRUE(tick.slots[0].books.empty());
+    EXPECT_EQ(tick.slots[0].n_books, 0u);
 }

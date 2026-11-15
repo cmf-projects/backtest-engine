@@ -258,6 +258,10 @@ TEST(BusFraming, BookStorageReusedForOneOrMoreComponents) {
     ASSERT_TRUE(DecodeBusTick(one.data(), one.size(), got));
     ASSERT_TRUE(DecodeBusTick(two.data(), two.size(), got));
     ASSERT_EQ(got.n_books, 2u);
+    EXPECT_GE(got.books[0].bids.capacity(), 64u);
+    EXPECT_GE(got.books[0].asks.capacity(), 64u);
+    EXPECT_GE(got.books[1].bids.capacity(), 64u);
+    EXPECT_GE(got.books[1].asks.capacity(), 64u);
 
     const auto* books_data = got.books.data();
     const auto books_cap = got.books.capacity();

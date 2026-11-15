@@ -88,7 +88,12 @@ void AppendBookUpdate(std::vector<std::uint8_t>& out, const BusBookUpdate& book)
         return false;
     }
     if (books.size() < n) {
+        const std::size_t born = books.size();
         books.resize(n);
+        for (std::size_t i = born; i < books.size(); ++i) {
+            books[i].bids.reserve(population::kMaxLevelsPerSide);
+            books[i].asks.reserve(population::kMaxLevelsPerSide);
+        }
     }
     for (std::uint32_t i = 0; i < n; ++i) {
         BusBookUpdate& book = books[i];

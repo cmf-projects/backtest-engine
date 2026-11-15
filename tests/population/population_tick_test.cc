@@ -70,8 +70,8 @@ TEST(PopulationTick, FirstTickIsSharedKeyframe) {
     EXPECT_EQ(tick.books[0].kind, BookPatchKind::Keyframe);
     EXPECT_EQ(tick.books[0].bids[0].qty, 10u);
     ASSERT_EQ(tick.slots.size(), 2u);
-    EXPECT_TRUE(tick.slots[0].books.empty());
-    EXPECT_TRUE(tick.slots[1].books.empty());
+    EXPECT_EQ(tick.slots[0].n_books, 0u);
+    EXPECT_EQ(tick.slots[1].n_books, 0u);
 }
 
 TEST(PopulationTick, LaterTickSendsPerSlotDiff) {
@@ -90,7 +90,7 @@ TEST(PopulationTick, LaterTickSendsPerSlotDiff) {
     EXPECT_EQ(tick.pop_ts_ns, 200u);
     EXPECT_TRUE(tick.books.empty());
     ASSERT_EQ(tick.slots.size(), 1u);
-    ASSERT_EQ(tick.slots[0].books.size(), 1u);
+    ASSERT_EQ(tick.slots[0].n_books, 1u);
     EXPECT_EQ(tick.slots[0].books[0].kind, BookPatchKind::Diff);
     ASSERT_EQ(tick.slots[0].books[0].bids.size(), 1u);
     EXPECT_DOUBLE_EQ(tick.slots[0].books[0].bids[0].price, 100.0);
@@ -117,11 +117,11 @@ TEST(PopulationTick, MdLagSlotsSeeDifferentBooks) {
         const auto tick = pop.MakeTick();
         ASSERT_EQ(tick.slots.size(), 2u);
         // slot1 view@200: qty 8 → Diff
-        ASSERT_EQ(tick.slots[0].books.size(), 1u);
+        ASSERT_EQ(tick.slots[0].n_books, 1u);
         EXPECT_EQ(tick.slots[0].books[0].kind, BookPatchKind::Diff);
         EXPECT_EQ(tick.slots[0].books[0].bids[0].qty, 8u);
         // slot2 view@100: still qty 10 → no patch
-        EXPECT_TRUE(tick.slots[1].books.empty());
+        EXPECT_EQ(tick.slots[1].n_books, 0u);
     }
 
     ASSERT_TRUE(pop.Advance());  // pop=300
@@ -129,7 +129,7 @@ TEST(PopulationTick, MdLagSlotsSeeDifferentBooks) {
         const auto tick = pop.MakeTick();
         ASSERT_EQ(tick.slots.size(), 2u);
         EXPECT_EQ(tick.slots[0].books[0].bids[0].qty, 6u);  // view@300
-        ASSERT_EQ(tick.slots[1].books.size(), 1u);
+        ASSERT_EQ(tick.slots[1].n_books, 1u);
         EXPECT_EQ(tick.slots[1].books[0].kind, BookPatchKind::Diff);
         EXPECT_EQ(tick.slots[1].books[0].bids[0].qty, 8u);  // view@200
     }
@@ -165,7 +165,7 @@ TEST(PopulationTick, MdLagAppliesCurrentImpactToOldFileSnap) {
     const auto tick = pop.MakeTick();
     // view_ts=100: file ask still 10, current eaten 4 → effective 6
     ASSERT_EQ(tick.slots.size(), 1u);
-    ASSERT_EQ(tick.slots[0].books.size(), 1u);
+    ASSERT_EQ(tick.slots[0].n_books, 1u);
     EXPECT_EQ(tick.slots[0].books[0].kind, BookPatchKind::Diff);
     ASSERT_FALSE(tick.slots[0].books[0].asks.empty());
     EXPECT_DOUBLE_EQ(tick.slots[0].books[0].asks[0].price, 101.0);
@@ -184,16 +184,16 @@ TEST(PopulationTick, FixedStepHoldsBookUntilDatasetEvent) {
 
     ASSERT_TRUE(pop.Advance());
     EXPECT_EQ(pop.clock().pop_ts_ns(), 400u);
-    EXPECT_TRUE(pop.MakeTick().slots[0].books.empty());
+    EXPECT_EQ(pop.MakeTick().slots[0].n_books, 0u);
 
     ASSERT_TRUE(pop.Advance());
     EXPECT_EQ(pop.clock().pop_ts_ns(), 700u);
-    EXPECT_TRUE(pop.MakeTick().slots[0].books.empty());
+    EXPECT_EQ(pop.MakeTick().slots[0].n_books, 0u);
 
     ASSERT_TRUE(pop.Advance());
     EXPECT_EQ(pop.clock().pop_ts_ns(), 1000u);
     const auto tick = pop.MakeTick();
-    ASSERT_EQ(tick.slots[0].books.size(), 1u);
+    ASSERT_EQ(tick.slots[0].n_books, 1u);
     EXPECT_EQ(tick.slots[0].books[0].kind, BookPatchKind::Diff);
     EXPECT_EQ(tick.slots[0].books[0].bids[0].qty, 8u);
 
@@ -231,7 +231,7 @@ TEST(PopulationTick, LongDiffBecomesKeyframeOfFullBook) {
     {
         const auto tick = pop.MakeTick();
         ASSERT_EQ(tick.slots.size(), 1u);
-        ASSERT_EQ(tick.slots[0].books.size(), 1u);
+        ASSERT_EQ(tick.slots[0].n_books, 1u);
         const auto& book = tick.slots[0].books[0];
         EXPECT_EQ(book.kind, BookPatchKind::Keyframe);
         ASSERT_EQ(book.bids.size(), static_cast<std::size_t>(kDepth));
@@ -247,6 +247,47 @@ TEST(PopulationTick, LongDiffBecomesKeyframeOfFullBook) {
     {
         const auto tick = pop.MakeTick();
         ASSERT_EQ(tick.slots.size(), 1u);
-        EXPECT_TRUE(tick.slots[0].books.empty());
+        EXPECT_EQ(tick.slots[0].n_books, 0u);
     }
+}
+
+TEST(PopulationTick, QuietTickKeepsPatchBuffers) {
+    auto tape = std::make_unique<FakeTape>(std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(2, 200, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(3, 300, {{100.0, 8}}, {{101.0, 5}}),
+        Ev(4, 400, {{100.0, 8}}, {{101.0, 5}}),
+        Ev(5, 500, {{100.0, 7}}, {{101.0, 5}}),
+    });
+    Population pop("C1", 0.01, std::move(tape), OneSlot());
+    pop.Start();
+    (void)pop.MakeTick();
+
+    ASSERT_TRUE(pop.Advance());
+    EXPECT_EQ(pop.MakeTick().slots[0].n_books, 0u);
+
+    ASSERT_TRUE(pop.Advance());
+    const population::TickView& born = pop.MakeTick();
+    ASSERT_EQ(born.slots[0].n_books, 1u);
+    const std::size_t stored = born.slots[0].books.size();
+    const std::size_t bid_cap = born.slots[0].books[0].bids.capacity();
+    const std::size_t ask_cap = born.slots[0].books[0].asks.capacity();
+    EXPECT_GE(bid_cap, population::kMaxDiffLevelsPerSide);
+    EXPECT_GE(ask_cap, population::kMaxDiffLevelsPerSide);
+
+    ASSERT_TRUE(pop.Advance());
+    const population::TickView& quiet = pop.MakeTick();
+    EXPECT_EQ(quiet.slots[0].n_books, 0u);
+    EXPECT_EQ(quiet.slots[0].books.size(), stored);
+    EXPECT_EQ(quiet.slots[0].books[0].bids.capacity(), bid_cap);
+    EXPECT_EQ(quiet.slots[0].books[0].asks.capacity(), ask_cap);
+
+    ASSERT_TRUE(pop.Advance());
+    const population::TickView& again = pop.MakeTick();
+    ASSERT_EQ(again.slots[0].n_books, 1u);
+    EXPECT_EQ(again.slots[0].books.size(), stored);
+    EXPECT_EQ(again.slots[0].books[0].bids.capacity(), bid_cap);
+    EXPECT_EQ(again.slots[0].books[0].asks.capacity(), ask_cap);
+    EXPECT_EQ(again.slots[0].books[0].kind, BookPatchKind::Diff);
+    EXPECT_EQ(again.slots[0].books[0].bids[0].qty, 7u);
 }

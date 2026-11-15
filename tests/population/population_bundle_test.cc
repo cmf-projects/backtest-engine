@@ -191,7 +191,7 @@ TEST(PopulationBundle, MakeTickSpotAndFutKeyframes) {
     const auto tick0 = pop.MakeTick();
     EXPECT_EQ(tick0.pop_ts_ns, 100u);
     ASSERT_EQ(tick0.slots.size(), 1u);
-    EXPECT_TRUE(tick0.slots[0].books.empty());
+    EXPECT_EQ(tick0.slots[0].n_books, 0u);
     const auto* fut0 = FindShared(tick0.books, "fut");
     const auto* spot0 = FindShared(tick0.books, "spot");
     ASSERT_NE(fut0, nullptr);
@@ -206,7 +206,7 @@ TEST(PopulationBundle, MakeTickSpotAndFutKeyframes) {
     EXPECT_EQ(tick1.pop_ts_ns, 200u);
     ASSERT_EQ(tick1.slots.size(), 1u);
     // Both changed → both Diff
-    ASSERT_EQ(tick1.slots[0].books.size(), 2u);
+    ASSERT_EQ(tick1.slots[0].n_books, 2u);
     const auto* fut1 = FindBook(tick1.slots[0].books, "fut");
     const auto* spot1 = FindBook(tick1.slots[0].books, "spot");
     ASSERT_NE(fut1, nullptr);
@@ -245,7 +245,7 @@ TEST(PopulationBundle, MakeTickOnlyFutUntilSpotStarts) {
     const auto tick0 = pop.MakeTick();
     EXPECT_EQ(tick0.pop_ts_ns, 100u);
     ASSERT_EQ(tick0.slots.size(), 1u);
-    EXPECT_TRUE(tick0.slots[0].books.empty());
+    EXPECT_EQ(tick0.slots[0].n_books, 0u);
     ASSERT_EQ(tick0.books.size(), 1u);
     EXPECT_EQ(tick0.books[0].component_id, "fut");
     EXPECT_EQ(tick0.books[0].kind, BookPatchKind::Keyframe);
@@ -255,7 +255,7 @@ TEST(PopulationBundle, MakeTickOnlyFutUntilSpotStarts) {
     const auto tick1 = pop.MakeTick();
     EXPECT_EQ(tick1.pop_ts_ns, 200u);
     ASSERT_EQ(tick1.slots.size(), 1u);
-    ASSERT_EQ(tick1.slots[0].books.size(), 2u);
+    ASSERT_EQ(tick1.slots[0].n_books, 2u);
     const auto* fut1 = FindBook(tick1.slots[0].books, "fut");
     const auto* spot1 = FindBook(tick1.slots[0].books, "spot");
     ASSERT_NE(fut1, nullptr);

@@ -191,7 +191,7 @@ void ToBusTickInto(const population::TickView& in, BusTick& out,
         const auto& slot = in.slots[si];
         BusSlotTick& st = out.slots[si];
         st.slot_id = slot.slot_id;
-        st.n_books = static_cast<std::uint32_t>(slot.books.size());
+        st.n_books = slot.n_books;
         for (std::uint32_t bi = 0; bi < st.n_books; ++bi) {
             const auto& book = slot.books[bi];
             BusBookUpdate& u = st.books[bi];

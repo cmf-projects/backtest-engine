@@ -39,6 +39,8 @@ struct SlotBookUpdateView {
 
 struct SlotTickView {
     std::uint32_t slot_id = 0;
+    // Live prefix is books[0, n_books). Entries past n_books stay allocated.
+    std::uint32_t n_books = 0;
     std::vector<SlotBookUpdateView> books;
     std::vector<Trade> trades;  // fills/cancels from due match at this pop_ts
 };

@@ -413,7 +413,7 @@ const TickView& Population::MakeTick() {
         slot_tick.trades.swap(pending_trades_[cfg.slot_id]);
         pending_trades_[cfg.slot_id].clear();
         if (shared) {
-            slot_tick.books.resize(0);
+            slot_tick.n_books = 0;
             continue;
         }
 
@@ -479,7 +479,13 @@ const TickView& Population::MakeTick() {
                 }
             }
         }
-        slot_tick.books.resize(book_n);
+        slot_tick.n_books = static_cast<std::uint32_t>(book_n);
+        for (std::size_t i = book_n; i < slot_tick.books.size(); ++i) {
+            SlotBookUpdateView& stale = slot_tick.books[i];
+            stale.component_id.clear();
+            stale.bids.clear();
+            stale.asks.clear();
+        }
     }
 
     TrimWindowForLags();
