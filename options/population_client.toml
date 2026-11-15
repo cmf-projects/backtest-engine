@@ -1,0 +1,17 @@
+# Population client (external engine).
+# Override: CONFIG=... / POPULATION_UDS / POPULATION_DATASET / CLIENT_POPS
+#           POPULATION_SEC_CODE / POPULATION_TICK_SIZE / POPULATION_IMPACT_LAMBDA
+# argv: population_client [uds_path] [dataset] [n_pops]
+
+uds_path = "/tmp/cmf-population.sock"
+dataset = "testdata/population/smoke.jsonl"
+n_pops = 1
+
+component_id = "SPOT"
+class_code = "TQBR"
+sec_code = "SBER"
+tick_size = "0.01"
+
+md_lag_ns = 0
+delta_ns = 1
+impact_lambda = "1e-15"
