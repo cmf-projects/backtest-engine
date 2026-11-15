@@ -1,9 +1,15 @@
 #include "transport/shm_queue.hpp"
 
+#include <atomic>
+#include <cerrno>
+#include <charconv>
 #include <new>
+#include <string>
 #include <utility>
 
+#include <dirent.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -18,6 +24,50 @@ constexpr std::size_t kRingBytes = sizeof(PopulationQueue);
            c == '_' || c == '-';
 }
 
+[[nodiscard]] bool AllDigits(std::string_view text) {
+    if (text.empty()) {
+        return false;
+    }
+    for (char c : text) {
+        if (c < '0' || c > '9') {
+            return false;
+        }
+    }
+    return true;
+}
+
+// File name cmf-<pid>-<n>-out|in. Returns false when the shape does not match.
+[[nodiscard]] bool ParseCmfShmFile(std::string_view file, pid_t& pid) {
+    constexpr std::string_view kPrefix = "cmf-";
+    if (!file.starts_with(kPrefix)) {
+        return false;
+    }
+    const auto rest = file.substr(kPrefix.size());
+    const auto pid_end = rest.find('-');
+    if (pid_end == std::string_view::npos || pid_end == 0) {
+        return false;
+    }
+    const auto pid_text = rest.substr(0, pid_end);
+    const auto after_pid = rest.substr(pid_end + 1);
+    const auto seq_end = after_pid.find('-');
+    if (seq_end == std::string_view::npos || seq_end == 0) {
+        return false;
+    }
+    const auto seq_text = after_pid.substr(0, seq_end);
+    const auto side = after_pid.substr(seq_end + 1);
+    if ((side != "out" && side != "in") || !AllDigits(pid_text) || !AllDigits(seq_text)) {
+        return false;
+    }
+    pid_t parsed = 0;
+    const auto* begin = pid_text.data();
+    const auto* end = begin + pid_text.size();
+    if (std::from_chars(begin, end, parsed).ec != std::errc{} || parsed <= 0) {
+        return false;
+    }
+    pid = parsed;
+    return true;
+}
+
 void CloseFd(int& fd) noexcept {
     if (fd >= 0) {
         ::close(fd);
@@ -27,24 +77,51 @@ void CloseFd(int& fd) noexcept {
 
 }  // namespace
 
-std::string SanitizeShmToken(std::string_view population_id) {
-    std::string out;
-    out.reserve(population_id.size());
+bool IsValidPopulationId(std::string_view population_id) {
+    if (population_id.empty()) {
+        return false;
+    }
     for (char c : population_id) {
-        out.push_back(IsShmSafe(c) ? c : '_');
+        if (!IsShmSafe(c)) {
+            return false;
+        }
     }
-    if (out.empty()) {
-        out = "pop";
-    }
-    return out;
+    return true;
 }
 
-std::string MakeOutQueueName(std::string_view population_id) {
-    return "/cmf-" + SanitizeShmToken(population_id) + "-out";
+ShmQueueNames MakeUniqueQueueNames() {
+    static std::atomic<std::uint64_t> seq{0};
+    const auto n = seq.fetch_add(1, std::memory_order_relaxed);
+    const std::string base =
+        "/cmf-" + std::to_string(::getpid()) + "-" + std::to_string(n);
+    return ShmQueueNames{.out_name = base + "-out", .in_name = base + "-in"};
 }
 
-std::string MakeInQueueName(std::string_view population_id) {
-    return "/cmf-" + SanitizeShmToken(population_id) + "-in";
+void ReapStaleShmQueues(bool include_self) {
+    DIR* dir = ::opendir("/dev/shm");
+    if (dir == nullptr) {
+        return;
+    }
+    const pid_t self = ::getpid();
+    while (const dirent* ent = ::readdir(dir)) {
+        pid_t pid = 0;
+        if (!ParseCmfShmFile(ent->d_name, pid)) {
+            continue;
+        }
+        const bool own = pid == self;
+        if (own && !include_self) {
+            continue;
+        }
+        if (!own && ::kill(pid, 0) == 0) {
+            continue;
+        }
+        if (!own && errno != ESRCH) {
+            continue;
+        }
+        const std::string shm_name = std::string("/") + ent->d_name;
+        ::shm_unlink(shm_name.c_str());
+    }
+    ::closedir(dir);
 }
 
 ShmQueueMapping::~ShmQueueMapping() { Reset(); }
@@ -95,9 +172,7 @@ std::optional<ShmQueueMapping> CreateShmQueue(const std::string& name) {
         return std::nullopt;
     }
 
-    // Crash leftovers: drop stale object once so O_EXCL can succeed.
-    ::shm_unlink(name.c_str());
-
+    // A name already taken belongs to someone else. Do not unlink it.
     const int fd = ::shm_open(name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
     if (fd < 0) {
         return std::nullopt;

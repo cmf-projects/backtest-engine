@@ -1,8 +1,12 @@
 #include "transport/queue_registry.hpp"
+#include "transport/shm_queue.hpp"
 
 #include <gtest/gtest.h>
 
+#include <string>
+
 using transport::AckStatus;
+using transport::AttachShmQueue;
 using transport::ErrorCode;
 using transport::QueueMessage;
 using transport::QueueRegistry;
@@ -11,8 +15,9 @@ TEST(QueueRegistry, CreateGivesLiveRings) {
     QueueRegistry reg;
     auto ack = reg.Create("pop-1");
     ASSERT_EQ(ack.status, AckStatus::Ok);
-    EXPECT_EQ(ack.out_queue, "/cmf-pop-1-out");
-    EXPECT_EQ(ack.in_queue, "/cmf-pop-1-in");
+    EXPECT_NE(ack.out_queue.find("/cmf-"), std::string::npos);
+    EXPECT_NE(ack.out_queue.find("-out"), std::string::npos);
+    EXPECT_NE(ack.in_queue.find("-in"), std::string::npos);
     EXPECT_EQ(reg.size(), 1u);
 
     auto* out = reg.FindOut(ack.out_queue);
@@ -49,4 +54,41 @@ TEST(QueueRegistry, DestroyRemoves) {
     EXPECT_EQ(reg.size(), 0u);
     EXPECT_EQ(reg.FindOut(ack.out_queue), nullptr);
     EXPECT_FALSE(reg.Destroy("pop-1"));
+}
+
+TEST(QueueRegistry, SameIdInTwoRegistriesAreDistinct) {
+    QueueRegistry a;
+    QueueRegistry b;
+    const auto aa = a.Create("same");
+    const auto bb = b.Create("same");
+    ASSERT_EQ(aa.status, AckStatus::Ok);
+    ASSERT_EQ(bb.status, AckStatus::Ok);
+    EXPECT_NE(aa.out_queue, bb.out_queue);
+
+    QueueMessage msg;
+    msg.size = 1;
+    msg.bytes[0] = 0x42;
+    ASSERT_TRUE(a.FindOut(aa.out_queue)->TryPush(msg));
+
+    auto attach_a = AttachShmQueue(aa.out_queue);
+    auto attach_b = AttachShmQueue(bb.out_queue);
+    ASSERT_TRUE(attach_a.has_value());
+    ASSERT_TRUE(attach_b.has_value());
+
+    QueueMessage got;
+    EXPECT_TRUE(attach_a->get()->TryPop(got));
+    EXPECT_EQ(got.bytes[0], 0x42);
+    EXPECT_FALSE(attach_b->get()->TryPop(got));
+
+    ASSERT_TRUE(a.Destroy("same"));
+    EXPECT_FALSE(AttachShmQueue(aa.out_queue).has_value());
+    EXPECT_TRUE(AttachShmQueue(bb.out_queue).has_value());
+}
+
+TEST(QueueRegistry, RejectsUnsafePopulationId) {
+    QueueRegistry reg;
+    const auto ack = reg.Create("a/b");
+    EXPECT_EQ(ack.status, AckStatus::Error);
+    EXPECT_EQ(ack.reason_code, ErrorCode::CreateFailed);
+    EXPECT_EQ(reg.size(), 0u);
 }

@@ -125,6 +125,7 @@ int App::Run() {
 
     try {
         LOG_INFO("listen {} (drain_ms={})", cfg_.uds_path, cfg_.drain_timeout_ms);
+        transport::ReapStaleShmQueues(/*include_self=*/true);
 
         auto listener = UdsListener::Bind(cfg_.uds_path);
         if (!listener.valid()) {

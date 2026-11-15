@@ -27,6 +27,10 @@ public:
         if (population_id.empty()) {
             return MakeCreateReject("", ErrorCode::CreateFailed, "empty population_id");
         }
+        if (!IsValidPopulationId(population_id)) {
+            return MakeCreateReject(population_id, ErrorCode::CreateFailed,
+                                    "invalid population_id");
+        }
 
         std::lock_guard lock(mu_);
         if (by_pop_.find(population_id) != by_pop_.end()) {
@@ -34,8 +38,9 @@ public:
                                     "population already has queues");
         }
 
-        const std::string out_name = MakeOutQueueName(population_id);
-        const std::string in_name = MakeInQueueName(population_id);
+        const ShmQueueNames names = MakeUniqueQueueNames();
+        const std::string& out_name = names.out_name;
+        const std::string& in_name = names.in_name;
 
         auto out = CreateShmQueue(out_name);
         if (!out) {

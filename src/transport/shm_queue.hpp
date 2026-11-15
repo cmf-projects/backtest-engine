@@ -1,21 +1,31 @@
 #pragma once
 
 // POSIX shm-backed PopulationQueue (cross-process SPSC).
-// CreateAck.out_queue / in_queue are shm object names (/cmf-…-out|in).
+// CreateAck.out_queue / in_queue are shm object names (/cmf-<pid>-<n>-out|in).
 
 #include "transport/queue_types.hpp"
 
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace transport {
 
-// Sanitize population_id → POSIX shm-safe suffix ([A-Za-z0-9_-]).
-[[nodiscard]] std::string SanitizeShmToken(std::string_view population_id);
+// population_id may contain only [A-Za-z0-9_-]. Empty is invalid.
+[[nodiscard]] bool IsValidPopulationId(std::string_view population_id);
 
-[[nodiscard]] std::string MakeOutQueueName(std::string_view population_id);
-[[nodiscard]] std::string MakeInQueueName(std::string_view population_id);
+struct ShmQueueNames {
+    std::string out_name;
+    std::string in_name;
+};
+
+// Fresh names for this process. Two calls never share a name.
+[[nodiscard]] ShmQueueNames MakeUniqueQueueNames();
+
+// Drop cmf-<pid>-* objects whose pid is dead. When include_self is set, also
+// drop this pid's objects — only safe before this process has created any.
+void ReapStaleShmQueues(bool include_self);
 
 // RAII mapping of one PopulationQueue region.
 // Owner (venue Create): constructs ring + shm_unlink on destroy.
@@ -50,7 +60,7 @@ private:
     bool owner_ = false;
 };
 
-// Venue: O_CREAT|O_EXCL (stale name unlinked once), placement-new ring.
+// Venue: O_CREAT|O_EXCL, placement-new ring. Does not unlink an existing name.
 [[nodiscard]] std::optional<ShmQueueMapping> CreateShmQueue(const std::string& name);
 
 // Engine: map existing ring (no construct, no unlink).
