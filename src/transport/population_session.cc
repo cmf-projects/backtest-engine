@@ -39,8 +39,8 @@ bool WaitProgress(SpscBus& in, BusMsgType& type, std::vector<std::uint8_t>& payl
         }
         in.Wait(deadline);
     }
-    result = BusRecvResult::Empty;
-    return false;
+    result = in.TryRecv(type, payload);
+    return result != BusRecvResult::Empty;
 }
 
 }  // namespace

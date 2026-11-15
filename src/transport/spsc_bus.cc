@@ -90,7 +90,7 @@ bool SpscBus::TrySend(BusMsgType type, const std::vector<std::uint8_t>& payload,
             if (!wait || std::chrono::steady_clock::now() >= deadline || stopped) {
                 return false;
             }
-            queue_->Wait(deadline);
+            queue_->Wait(deadline, RingWait::Space);
         }
         offset += chunk;
     }

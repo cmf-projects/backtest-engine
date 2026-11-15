@@ -25,6 +25,10 @@ void FutexWait(std::uint32_t* addr, std::uint32_t expected,
 // (that value is ABI-unstable across -mtune / toolchains).
 inline constexpr std::size_t kCacheLineSize = 64;
 
+// Data: consumer is waiting for a slot to read.
+// Space: producer is waiting for a free slot to write.
+enum class RingWait : std::uint8_t { Data, Space };
+
 template <typename T, std::size_t Capacity>
 class SpscRing {
     static_assert(std::is_trivially_copyable_v<T>, "SpscRing: T must be trivially copyable");
@@ -64,12 +68,16 @@ public:
         return true;
     }
 
-    // Sleep until Notify(), or until deadline. Safe to call when the ring is empty
-    // or full: a push or pop wakes the other side.
-    void Wait(std::chrono::steady_clock::time_point deadline) noexcept {
+    // Sleep until the peer makes `why` true, or until deadline.
+    // Data: caller is the consumer and already observed an empty ring.
+    // Space: caller is the producer and already observed a full ring.
+    // The wake counter alone is not enough: the push or pop that frees the
+    // caller may have bumped it before this samples `seen`. Recheck the ring
+    // after arming the sleeper, or that event is slept through until deadline.
+    void Wait(std::chrono::steady_clock::time_point deadline, RingWait why) noexcept {
         const std::uint32_t seen = wake_.load(std::memory_order_acquire);
         waiting_.store(1, std::memory_order_release);
-        if (wake_.load(std::memory_order_acquire) != seen) {
+        if (ready(why) || wake_.load(std::memory_order_acquire) != seen) {
             waiting_.store(0, std::memory_order_release);
             return;
         }
@@ -90,6 +98,16 @@ public:
     }
 
 private:
+    // True when the waiter should not sleep. Called after `waiting_` is published.
+    [[nodiscard]] bool ready(RingWait why) const noexcept {
+        if (why == RingWait::Data) {
+            return !empty();
+        }
+        const std::size_t head = head_.load(std::memory_order_relaxed);
+        const std::size_t next = (head + 1) & kMask;
+        return next != tail_.load(std::memory_order_acquire);
+    }
+
     static constexpr std::size_t kMask = Capacity - 1;
 
     // One slot is always left free to distinguish full from empty.

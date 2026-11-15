@@ -33,7 +33,7 @@ namespace {
 
 [[nodiscard]] bool RecvMessage(transport::SpscBus& bus, transport::BusMsgType& type,
                                std::vector<std::uint8_t>& payload,
-                               std::chrono::milliseconds timeout = std::chrono::milliseconds(60'000)) {
+                               std::chrono::milliseconds timeout = std::chrono::milliseconds(8'000)) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
         const auto r = bus.TryRecv(type, payload);
@@ -182,7 +182,7 @@ bool RunPopulationLoop(PopHandle& pop, const Config& cfg, EndedHub& hub) {
     }
 
     transport::SessionEnded ended;
-    if (!hub.Wait(pop.population_id, ended, std::chrono::milliseconds(120'000))) {
+    if (!hub.Wait(pop.population_id, ended, std::chrono::milliseconds(8'000))) {
         pop.error = "SessionEnded timeout";
         return false;
     }

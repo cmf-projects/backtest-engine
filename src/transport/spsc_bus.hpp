@@ -52,7 +52,7 @@ public:
     // Park until the peer pushes or pops, or until deadline.
     void Wait(std::chrono::steady_clock::time_point deadline) noexcept {
         if (queue_ != nullptr) {
-            queue_->Wait(deadline);
+            queue_->Wait(deadline, RingWait::Data);
         }
     }
 

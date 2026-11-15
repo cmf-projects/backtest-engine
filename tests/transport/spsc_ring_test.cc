@@ -83,7 +83,7 @@ TEST(SpscRing, WaitWakesOnPush) {
                 got = v;
                 return;
             }
-            q.Wait(deadline);
+            q.Wait(deadline, transport::RingWait::Data);
         }
     });
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
@@ -92,10 +92,36 @@ TEST(SpscRing, WaitWakesOnPush) {
     EXPECT_EQ(got, 7);
 }
 
+TEST(SpscRing, WaitSeesDataAlreadyQueued) {
+    SpscRing<int, 8> q;
+    ASSERT_TRUE(q.TryPush(4));
+    const auto started = std::chrono::steady_clock::now();
+    q.Wait(started + std::chrono::milliseconds(400), transport::RingWait::Data);
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    EXPECT_LT(elapsed, std::chrono::milliseconds(50));
+    int v = 0;
+    EXPECT_TRUE(q.TryPop(v));
+    EXPECT_EQ(v, 4);
+}
+
+TEST(SpscRing, WaitSeesSpaceAlreadyFree) {
+    SpscRing<int, 4> q;
+    ASSERT_TRUE(q.TryPush(1));
+    ASSERT_TRUE(q.TryPush(2));
+    ASSERT_TRUE(q.TryPush(3));
+    int v = 0;
+    ASSERT_TRUE(q.TryPop(v));
+    const auto started = std::chrono::steady_clock::now();
+    q.Wait(started + std::chrono::milliseconds(400), transport::RingWait::Space);
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    EXPECT_LT(elapsed, std::chrono::milliseconds(50));
+    EXPECT_TRUE(q.TryPush(4));
+}
+
 TEST(SpscRing, WaitTimesOutWhenIdle) {
     SpscRing<int, 8> q;
     const auto started = std::chrono::steady_clock::now();
-    q.Wait(started + std::chrono::milliseconds(50));
+    q.Wait(started + std::chrono::milliseconds(50), transport::RingWait::Data);
     const auto elapsed = std::chrono::steady_clock::now() - started;
     EXPECT_GE(elapsed, std::chrono::milliseconds(40));
     EXPECT_LT(elapsed, std::chrono::milliseconds(500));
