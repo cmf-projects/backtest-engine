@@ -233,6 +233,13 @@ if(CMF_BUILD_TESTS)
   target_compile_definitions(dataset_tests PRIVATE
     CMF_TESTDATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/testdata")
   gtest_discover_tests(dataset_tests)
+
+  add_executable(venue_tests
+    tests/population_venue/config_test.cc)
+  target_link_libraries(venue_tests PRIVATE
+    cmf::population_venue
+    GTest::gtest_main)
+  gtest_discover_tests(venue_tests)
 endif()
 
 if(MSVC)

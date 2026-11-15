@@ -46,7 +46,7 @@ options/                    TOML per entrypoint (e.g. population_venue.toml)
 src/population_venue/       config/ + app/ + shutdown/ + log/ (spdlog plain|json)
 src/transport/              UDS, shm SPSC (QueueRegistry), bus, PopulationSession
 src/population/             core (1…3 components via MergedTape)
-src/dataset/                JSONL → Tape
+src/dataset/                JSONL / Feather (Databento bbo-1m, Arrow C++) → Tape; MakeTape picks by path
 testdata/population/        smoke JSONL
 scripts/mbo_to_snapshots.py offline MBO → snapshot JSONL
 docs/                       TZ, IMPL, PLAN, GLOSSARY, this file
