@@ -11,6 +11,7 @@
 #include <vector>
 
 using population::CancelOrder;
+using population::ExecType;
 using population::Level;
 using population::NewOrder;
 using population::OrderBatch;
@@ -92,11 +93,18 @@ TEST(OrderSubmit, DuplicateAndCancel) {
     OrderBatch cancel;
     cancel.cancels.push_back(CancelOrder{.slot_id = 1, .client_order_id = 1});
     EXPECT_EQ(pop.Submit(cancel).cancel_results[0], OrderResult::Ok);
-    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 0u);
+    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 1u);
+    EXPECT_EQ(pop.SlotBook(1)->orders()[0].cancel_effective_ts_ns, 150u);
 
     OrderBatch missing;
     missing.cancels.push_back(CancelOrder{.slot_id = 1, .client_order_id = 1});
     EXPECT_EQ(pop.Submit(missing).cancel_results[0], OrderResult::NoSuchOrder);
+
+    ASSERT_TRUE(pop.Advance());
+    const auto tick = pop.MakeTick();
+    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 0u);
+    ASSERT_EQ(tick.slots[0].trades.size(), 1u);
+    EXPECT_EQ(tick.slots[0].trades[0].exec_type, ExecType::Cancel);
 }
 
 TEST(OrderSubmit, CancelOfSameBatchOrderIsRejected) {
@@ -122,7 +130,8 @@ TEST(OrderSubmit, CancelOfSameBatchOrderIsRejected) {
     OrderBatch next_tick;
     next_tick.cancels.push_back(CancelOrder{.slot_id = 1, .client_order_id = 7});
     EXPECT_EQ(pop.Submit(next_tick).cancel_results[0], OrderResult::Ok);
-    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 0u);
+    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 1u);
+    EXPECT_EQ(pop.SlotBook(1)->orders()[0].cancel_effective_ts_ns, 150u);
 }
 
 TEST(OrderSubmit, RejectsBadComponentQtyGridSlot) {
@@ -194,12 +203,12 @@ TEST(OrderSubmit, ReuseAfterCancelIsRejected) {
     OrderBatch cancel;
     cancel.cancels.push_back(CancelOrder{.slot_id = 1, .client_order_id = 1});
     EXPECT_EQ(pop.Submit(cancel).cancel_results[0], OrderResult::Ok);
-    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 0u);
+    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 1u);
 
     OrderBatch again;
     again.orders.push_back(Buy(1, 100.0, 1));
     EXPECT_EQ(pop.Submit(again).order_results[0], OrderResult::DuplicateOrderId);
-    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 0u);
+    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 1u);
 }
 
 TEST(OrderSubmit, ReuseAfterFillIsRejected) {
@@ -262,5 +271,77 @@ TEST(OrderSubmit, DuplicateCancelInBatchIsRejected) {
     OrderBatch once;
     once.cancels.push_back(CancelOrder{.slot_id = 1, .client_order_id = 4});
     EXPECT_EQ(pop.Submit(once).cancel_results[0], OrderResult::Ok);
+    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 1u);
+    EXPECT_EQ(pop.SlotBook(1)->orders()[0].cancel_effective_ts_ns, 150u);
+}
+
+SnapshotEvent EvAsk(std::uint64_t ts_ns, double ask) {
+    SnapshotEvent e;
+    e.seq = ts_ns;
+    e.ts_ns = ts_ns;
+    e.symbol = "TEST";
+    e.bids = {Level{100.0, 10}};
+    e.asks = {Level{ask, 5}};
+    return e;
+}
+
+Population MakeAskPop(std::vector<SnapshotEvent> events) {
+    return Population("C1", 0.01, std::make_unique<FakeTape>(std::move(events)),
+                      {SlotConfig{.slot_id = 1, .md_lag_ns = 0, .delta_ns = 50}});
+}
+
+TEST(OrderSubmit, BookFillsWhileCancelIsStillInFlight) {
+    Population pop = MakeAskPop({
+        EvAsk(100, 105.0),
+        EvAsk(160, 105.0),
+        EvAsk(200, 101.0),
+    });
+    pop.Start();
+    (void)pop.MakeTick();
+
+    OrderBatch order;
+    order.orders.push_back(Buy(1, 101.0, 1));
+    ASSERT_EQ(pop.Submit(order).order_results[0], OrderResult::Ok);
+
+    ASSERT_TRUE(pop.Advance());  // 160, ask still 105
+    EXPECT_TRUE(pop.MakeTick().slots[0].trades.empty());
+
+    OrderBatch cancel;
+    cancel.cancels.push_back(CancelOrder{.slot_id = 1, .client_order_id = 1});
+    ASSERT_EQ(pop.Submit(cancel).cancel_results[0], OrderResult::Ok);
+    EXPECT_EQ(pop.SlotBook(1)->orders()[0].cancel_effective_ts_ns, 210u);
+
+    ASSERT_TRUE(pop.Advance());  // 200 < 210, ask crosses 101
+    const auto tick = pop.MakeTick();
+    ASSERT_EQ(tick.slots[0].trades.size(), 1u);
+    EXPECT_EQ(tick.slots[0].trades[0].exec_type, ExecType::Fill);
+    EXPECT_EQ(tick.slots[0].trades[0].qty, 1u);
+    EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 0u);
+}
+
+TEST(OrderSubmit, CancelPastDueDoesNotFill) {
+    Population pop = MakeAskPop({
+        EvAsk(100, 105.0),
+        EvAsk(160, 105.0),
+        EvAsk(250, 101.0),
+    });
+    pop.Start();
+    (void)pop.MakeTick();
+
+    OrderBatch order;
+    order.orders.push_back(Buy(1, 101.0, 1));
+    ASSERT_EQ(pop.Submit(order).order_results[0], OrderResult::Ok);
+
+    ASSERT_TRUE(pop.Advance());  // 160
+    EXPECT_TRUE(pop.MakeTick().slots[0].trades.empty());
+
+    OrderBatch cancel;
+    cancel.cancels.push_back(CancelOrder{.slot_id = 1, .client_order_id = 1});
+    ASSERT_EQ(pop.Submit(cancel).cancel_results[0], OrderResult::Ok);
+
+    ASSERT_TRUE(pop.Advance());  // 250 > 210
+    const auto tick = pop.MakeTick();
+    ASSERT_EQ(tick.slots[0].trades.size(), 1u);
+    EXPECT_EQ(tick.slots[0].trades[0].exec_type, ExecType::Cancel);
     EXPECT_EQ(pop.SlotBook(1)->LiveCount(), 0u);
 }

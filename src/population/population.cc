@@ -592,7 +592,9 @@ OrderResult Population::CancelOne(const CancelOrder& cancel) {
     if (!HasSlot(cancel.slot_id)) {
         return OrderResult::UnknownSlot;
     }
-    return slot_orders_.at(cancel.slot_id).Cancel(cancel.client_order_id);
+    const SlotConfig* cfg = FindSlot(cancel.slot_id);
+    return slot_orders_.at(cancel.slot_id)
+        .ScheduleCancel(cancel.client_order_id, clock_.pop_ts_ns() + cfg->delta_ns);
 }
 
 OrderResult Population::ValidateCancel(const CancelOrder& cancel) const {

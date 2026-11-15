@@ -14,14 +14,16 @@ class SlotOrders {
 public:
     [[nodiscard]] OrderResult Accept(WorkingOrder order);
 
-    [[nodiscard]] OrderResult Cancel(std::uint64_t client_order_id);
+    // Remember a cancel. The order stays live until MatchDue reaches `effective_ts_ns`.
+    [[nodiscard]] OrderResult ScheduleCancel(std::uint64_t client_order_id,
+                                             std::uint64_t effective_ts_ns);
 
     // Highest client_order_id applied on this slot. 0 until the first applied order.
     [[nodiscard]] std::uint64_t last_accepted_oid() const noexcept { return last_accepted_oid_; }
     void NoteAcceptedOid(std::uint64_t client_order_id) noexcept;
 
     // First cancel of a live id in this stamp is Ok and marks the order.
-    // A repeat with the same stamp is NoSuchOrder.
+    // A repeat with the same stamp, or a cancel already waiting on Δ, is NoSuchOrder.
     [[nodiscard]] OrderResult NoteCancel(std::uint64_t client_order_id, std::uint32_t stamp);
     void ClearCancelStamps() noexcept;
 
