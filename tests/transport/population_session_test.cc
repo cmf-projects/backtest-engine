@@ -128,7 +128,8 @@ SessionConfig MakeCfg(std::string population_id, std::vector<SnapshotEvent> even
     return cfg;
 }
 
-void ExpectOpenRejected(const std::string& population_id, BusOpen open) {
+void ExpectOpenRejected(const std::string& population_id, BusOpen open,
+                        const std::string& message_part) {
     const std::string path = TempSockPath();
     auto listener = UdsListener::Bind(path);
     QueueRegistry registry;
@@ -193,7 +194,9 @@ void ExpectOpenRejected(const std::string& population_id, BusOpen open) {
     EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
     EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
     EXPECT_EQ(open_ack.status, AckStatus::Error);
-    EXPECT_NE(open_ack.message.find("tick_size"), std::string::npos);
+    if (!message_part.empty()) {
+        EXPECT_NE(open_ack.message.find(message_part), std::string::npos);
+    }
     EXPECT_EQ(registry.size(), 0u);
 }
 
@@ -204,7 +207,16 @@ TEST(PopulationSession, UnsupportedTickSizeIsFatal) {
         const std::string id = std::string("pop-tick-") + (tick_size[0] == '5' ? "5" : "03");
         BusOpen open = MakeTestOpen(id, 1);
         open.components[0].tick_size = tick_size;
-        ExpectOpenRejected(id, std::move(open));
+        ExpectOpenRejected(id, std::move(open), "tick_size");
+    }
+}
+
+TEST(PopulationSession, BadImpactLambdaIsFatal) {
+    for (const char* lambda : {"abc", "-1"}) {
+        const std::string id = std::string("pop-lam-") + (lambda[0] == 'a' ? "abc" : "neg");
+        BusOpen open = MakeTestOpen(id, 1);
+        open.slots[0].impact_lambda = lambda;
+        ExpectOpenRejected(id, std::move(open), "impact_lambda");
     }
 }
 

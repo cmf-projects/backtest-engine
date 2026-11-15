@@ -3,6 +3,7 @@
 #include "population/price_ticks.hpp"
 
 #include <cmath>
+#include <stdexcept>
 
 namespace transport {
 namespace {
@@ -55,11 +56,11 @@ namespace {
     return BusExecType::Unspecified;
 }
 
-[[nodiscard]] double TickSizeOr(const TickSizeByComponent& tick_sizes,
+[[nodiscard]] double TickSizeOf(const TickSizeByComponent& tick_sizes,
                                 const std::string& component_id) {
     const auto it = tick_sizes.find(component_id);
     if (it == tick_sizes.end() || !(it->second > 0.0)) {
-        return 0.01;
+        throw std::invalid_argument("unknown component tick_size: " + component_id);
     }
     return it->second;
 }
@@ -111,8 +112,8 @@ population::SlotConfig ToSlotConfig(const BusSlotConfig& in) {
     out.slot_id = in.slot_id;
     out.md_lag_ns = in.md_lag_ns;
     out.delta_ns = in.delta_ns;
-    if (!ParseDecimal(in.impact_lambda, out.impact_lambda)) {
-        out.impact_lambda = 0.0;
+    if (!ParseDecimal(in.impact_lambda, out.impact_lambda) || out.impact_lambda < 0.0) {
+        throw std::invalid_argument("bad impact_lambda");
     }
     return out;
 }
@@ -140,7 +141,7 @@ void ToOrderBatchInto(const BusOrderBatch& in, population::OrderBatch& out,
         n.side = ToSide(o.side);
         n.tif = ToTif(o.tif);
         n.qty = o.qty;
-        n.price = FromBusPrice(o.price, TickSizeOr(tick_sizes, o.component_id));
+        n.price = FromBusPrice(o.price, TickSizeOf(tick_sizes, o.component_id));
     }
     if (out.cancels.size() != in.cancels.size()) {
         out.cancels.resize(in.cancels.size());
@@ -182,7 +183,7 @@ void ToBusTickInto(const population::TickView& in, BusTick& out,
         BusBookUpdate& u = out.books[i];
         u.component_id = book.component_id;
         u.kind = ToBusPatchKind(book.kind);
-        const double ts = TickSizeOr(tick_sizes, book.component_id);
+        const double ts = TickSizeOf(tick_sizes, book.component_id);
         AppendLevelsInto(u.bids, book.bids, ts);
         AppendLevelsInto(u.asks, book.asks, ts);
     }
@@ -196,7 +197,7 @@ void ToBusTickInto(const population::TickView& in, BusTick& out,
             BusBookUpdate& u = st.books[bi];
             u.component_id = book.component_id;
             u.kind = ToBusPatchKind(book.kind);
-            const double ts = TickSizeOr(tick_sizes, book.component_id);
+            const double ts = TickSizeOf(tick_sizes, book.component_id);
             AppendLevelsInto(u.bids, book.bids, ts);
             AppendLevelsInto(u.asks, book.asks, ts);
         }
@@ -212,7 +213,7 @@ void ToBusTickInto(const population::TickView& in, BusTick& out,
             if (trade.exec_type == population::ExecType::Cancel || trade.price == 0.0) {
                 tr.price = {};
             } else {
-                tr.price = ToBusPrice(trade.price, TickSizeOr(tick_sizes, trade.component_id));
+                tr.price = ToBusPrice(trade.price, TickSizeOf(tick_sizes, trade.component_id));
             }
             tr.qty = trade.qty;
             tr.leaves = trade.leaves;
