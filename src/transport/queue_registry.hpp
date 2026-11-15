@@ -24,17 +24,15 @@ struct QueuePair {
 class QueueRegistry {
 public:
     [[nodiscard]] CreateAck Create(const std::string& population_id) {
-        if (population_id.empty()) {
-            return MakeCreateReject("", ErrorCode::CreateFailed, "empty population_id");
-        }
-        if (!IsValidPopulationId(population_id)) {
-            return MakeCreateReject(population_id, ErrorCode::CreateFailed,
-                                    "invalid population_id");
+        if (population_id.empty() || !IsValidPopulationId(population_id)) {
+            return MakeCreateReject(population_id, ErrorCode::InvalidPopulationId,
+                                    population_id.empty() ? "empty population_id"
+                                                          : "invalid population_id");
         }
 
         std::lock_guard lock(mu_);
         if (by_pop_.find(population_id) != by_pop_.end()) {
-            return MakeCreateReject(population_id, ErrorCode::CreateFailed,
+            return MakeCreateReject(population_id, ErrorCode::PopulationExists,
                                     "population already has queues");
         }
 

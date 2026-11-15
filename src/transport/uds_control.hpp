@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -76,6 +77,26 @@ private:
   std::mutex write_mu_;
 };
 
+// One CreateQueues read. Eof is a dead socket: no CreateAck is written.
+// Timeout means the deadline passed with no frame. Replied means a CreateAck
+// was written, whether Ok or a reject. A reject leaves the connection open.
+enum class CreateServeStatus : std::uint8_t {
+  Timeout = 0,
+  Eof = 1,
+  Replied = 2,
+};
+
+struct CreateServeResult {
+  CreateServeStatus status = CreateServeStatus::Timeout;
+  CreateAck ack{};
+};
+
+// `deadline == nullopt` blocks until a frame or EOF.
+[[nodiscard]] CreateServeResult ServeCreateQueuesOnce(
+    UdsConn &conn, QueueRegistry &registry,
+    std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt);
+
+// Blocking wrapper. On EOF returns a local reject and writes nothing.
 [[nodiscard]] CreateAck ServeCreateQueues(UdsConn &conn, QueueRegistry &registry);
 [[nodiscard]] CreateAck RequestCreateQueues(UdsConn &conn,
                                             const CreateQueues &req);

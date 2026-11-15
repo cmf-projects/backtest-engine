@@ -241,22 +241,44 @@ int UdsConn::ReadFrameDeadline(ParsedFrame& frame,
     }
 }
 
-CreateAck ServeCreateQueues(UdsConn& conn, QueueRegistry& registry) {
+CreateServeResult ServeCreateQueuesOnce(
+    UdsConn& conn, QueueRegistry& registry,
+    std::optional<std::chrono::steady_clock::time_point> deadline) {
+    ParsedFrame frame;
+    if (deadline.has_value()) {
+        const int got = conn.ReadFrameDeadline(frame, *deadline);
+        if (got == 0) {
+            return {};
+        }
+        if (got < 0) {
+            return CreateServeResult{CreateServeStatus::Eof, {}};
+        }
+    } else if (!conn.ReadFrame(frame)) {
+        return CreateServeResult{CreateServeStatus::Eof, {}};
+    }
+
     auto reply = [&](CreateAck ack) {
         (void)conn.WriteFrame(ControlMsgType::CreateAck, EncodeCreateAck(ack));
-        return ack;
+        return CreateServeResult{CreateServeStatus::Replied, std::move(ack)};
     };
 
-    ParsedFrame frame;
-    if (!conn.ReadFrame(frame) || frame.type != ControlMsgType::CreateQueues) {
-        return reply(MakeCreateReject("", ErrorCode::CreateFailed, "bad create frame"));
+    if (frame.type != ControlMsgType::CreateQueues) {
+        return reply(MakeCreateReject("", ErrorCode::BadControlFrame, "bad create frame"));
     }
 
     CreateQueues req;
     if (!DecodeCreateQueues(frame.payload.data(), frame.payload.size(), req)) {
-        return reply(MakeCreateReject("", ErrorCode::CreateFailed, "bad create payload"));
+        return reply(MakeCreateReject("", ErrorCode::BadControlPayload, "bad create payload"));
     }
     return reply(registry.Create(req.population_id));
+}
+
+CreateAck ServeCreateQueues(UdsConn& conn, QueueRegistry& registry) {
+    const CreateServeResult served = ServeCreateQueuesOnce(conn, registry, std::nullopt);
+    if (served.status == CreateServeStatus::Replied) {
+        return served.ack;
+    }
+    return MakeCreateReject("", ErrorCode::Unspecified, "control EOF");
 }
 
 CreateAck RequestCreateQueues(UdsConn& conn, const CreateQueues& req) {

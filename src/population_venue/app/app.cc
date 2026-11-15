@@ -13,7 +13,6 @@
 #include <cstdint>
 #include <exception>
 #include <functional>
-#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -76,44 +75,6 @@ void RunPopulationSession(transport::UdsConn& conn, transport::QueueRegistry& re
     }
 }
 
-// Like ServeCreateQueues, but returns nullopt on timeout so the app can check stop.
-[[nodiscard]] std::optional<transport::CreateAck>
-ServeCreateQueuesPoll(transport::UdsConn& conn, transport::QueueRegistry& registry,
-                      int poll_ms) {
-    using transport::ControlMsgType;
-    using transport::CreateQueues;
-    using transport::DecodeCreateQueues;
-    using transport::EncodeCreateAck;
-    using transport::MakeCreateReject;
-    using transport::ParsedFrame;
-
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(poll_ms);
-    ParsedFrame frame;
-    const int got = conn.ReadFrameDeadline(frame, deadline);
-    if (got == 0) {
-        return std::nullopt;  // timeout — caller retries / checks stop
-    }
-    if (got < 0) {
-        return MakeCreateReject("", transport::ErrorCode::CreateFailed, "control EOF or bad create");
-    }
-
-    auto reply = [&](transport::CreateAck ack) {
-        (void)conn.WriteFrame(ControlMsgType::CreateAck, EncodeCreateAck(ack));
-        return ack;
-    };
-
-    if (frame.type != ControlMsgType::CreateQueues) {
-        return reply(MakeCreateReject("", transport::ErrorCode::CreateFailed, "bad create frame"));
-    }
-
-    CreateQueues req;
-    if (!DecodeCreateQueues(frame.payload.data(), frame.payload.size(), req)) {
-        return reply(MakeCreateReject("", transport::ErrorCode::CreateFailed, "bad create payload"));
-    }
-    return reply(registry.Create(req.population_id));
-}
-
 }  // namespace
 
 App::App(Config cfg) : cfg_(std::move(cfg)) {}
@@ -162,17 +123,20 @@ int App::Run() {
             LOG_INFO("engine connected");
 
             while (conn.valid() && !StopRequested()) {
-                auto ack_opt = ServeCreateQueuesPoll(conn, registry, kCreatePollMs);
-                if (!ack_opt.has_value()) {
-                    continue;  // poll timeout
+                const auto served = transport::ServeCreateQueuesOnce(
+                    conn, registry,
+                    std::chrono::steady_clock::now() + std::chrono::milliseconds(kCreatePollMs));
+                if (served.status == transport::CreateServeStatus::Timeout) {
+                    continue;
                 }
-                const auto& ack = *ack_opt;
+                if (served.status == transport::CreateServeStatus::Eof) {
+                    LOG_WARN("control EOF");
+                    break;
+                }
+                const auto& ack = served.ack;
                 if (ack.status != AckStatus::Ok) {
-                    if (ack.population_id.empty()) {
-                        LOG_WARN("control EOF or bad create");
-                        break;
-                    }
-                    LOG_WARN("create rejected: {}", ack.message);
+                    LOG_WARN("create rejected: code={} {}",
+                             static_cast<unsigned>(ack.reason_code), ack.message);
                     continue;
                 }
 

@@ -11,14 +11,19 @@ namespace transport {
 // Venue config default until a real config object exists.
 inline constexpr std::uint32_t kDefaultDrainTimeoutMs = 60'000;
 
-// Only codes used on the UDS control path for now.
+// Codes on the UDS control path and the SPSC bus. A dead socket is not one of
+// these: the reader reports EOF and writes no ack.
 enum class ErrorCode : std::uint32_t {
     Unspecified = 0,
     Internal = 7,
     ClientClose = 14,
     DrainTimeout = 15,
     NoQuota = 16,
-    CreateFailed = 17,
+    CreateFailed = 17,         // shm create failed
+    BadControlFrame = 18,      // frame is not CreateQueues
+    BadControlPayload = 19,    // CreateQueues payload does not decode
+    InvalidPopulationId = 20,  // empty or illegal characters
+    PopulationExists = 21,     // this connection already has that id
 };
 
 enum class AckStatus : std::uint8_t {

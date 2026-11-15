@@ -43,7 +43,7 @@ TEST(QueueRegistry, DuplicateRejected) {
     ASSERT_EQ(reg.Create("pop-1").status, AckStatus::Ok);
     auto ack = reg.Create("pop-1");
     EXPECT_EQ(ack.status, AckStatus::Error);
-    EXPECT_EQ(ack.reason_code, ErrorCode::CreateFailed);
+    EXPECT_EQ(ack.reason_code, ErrorCode::PopulationExists);
     EXPECT_EQ(reg.size(), 1u);
 }
 
@@ -89,6 +89,6 @@ TEST(QueueRegistry, RejectsUnsafePopulationId) {
     QueueRegistry reg;
     const auto ack = reg.Create("a/b");
     EXPECT_EQ(ack.status, AckStatus::Error);
-    EXPECT_EQ(ack.reason_code, ErrorCode::CreateFailed);
+    EXPECT_EQ(ack.reason_code, ErrorCode::InvalidPopulationId);
     EXPECT_EQ(reg.size(), 0u);
 }
