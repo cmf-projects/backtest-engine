@@ -172,6 +172,46 @@ TEST(PopulationTick, MdLagAppliesCurrentImpactToOldFileSnap) {
     EXPECT_EQ(tick.slots[0].books[0].asks[0].qty, 6u);
 }
 
+TEST(PopulationTick, FixedStepHoldsBookUntilDatasetEvent) {
+    auto tape = std::make_unique<FakeTape>(std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(2, 1000, {{100.0, 8}}, {{101.0, 5}}),
+    });
+    Population pop("C1", 0.01, std::move(tape), OneSlot());
+    pop.SetStepNs(300);
+    pop.Start();
+    (void)pop.MakeTick();
+
+    ASSERT_TRUE(pop.Advance());
+    EXPECT_EQ(pop.clock().pop_ts_ns(), 400u);
+    EXPECT_TRUE(pop.MakeTick().slots[0].books.empty());
+
+    ASSERT_TRUE(pop.Advance());
+    EXPECT_EQ(pop.clock().pop_ts_ns(), 700u);
+    EXPECT_TRUE(pop.MakeTick().slots[0].books.empty());
+
+    ASSERT_TRUE(pop.Advance());
+    EXPECT_EQ(pop.clock().pop_ts_ns(), 1000u);
+    const auto tick = pop.MakeTick();
+    ASSERT_EQ(tick.slots[0].books.size(), 1u);
+    EXPECT_EQ(tick.slots[0].books[0].kind, BookPatchKind::Diff);
+    EXPECT_EQ(tick.slots[0].books[0].bids[0].qty, 8u);
+
+    EXPECT_FALSE(pop.Advance());
+}
+
+TEST(PopulationTick, NegativeStepFollowsDatasetTimestamps) {
+    auto tape = std::make_unique<FakeTape>(std::vector<SnapshotEvent>{
+        Ev(1, 100, {{100.0, 10}}, {{101.0, 5}}),
+        Ev(2, 1000, {{100.0, 8}}, {{101.0, 5}}),
+    });
+    Population pop("C1", 0.01, std::move(tape), OneSlot());
+    pop.SetStepNs(-1);
+    pop.Start();
+    ASSERT_TRUE(pop.Advance());
+    EXPECT_EQ(pop.clock().pop_ts_ns(), 1000u);
+}
+
 TEST(PopulationTick, LongDiffBecomesKeyframeOfFullBook) {
     // 40 bids shifted completely: 40 new prices + 40 deletions = 80 diff rows.
     constexpr long long kTop = 10'000;  // price 100.00

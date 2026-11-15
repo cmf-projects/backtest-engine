@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -492,14 +493,47 @@ bool Population::Advance() {
     if (ended_) {
         return false;
     }
-    if (!merge_->NextInto(step_scratch_)) {
+    if (step_ns_ == -1) {
+        if (!merge_->NextInto(step_scratch_)) {
+            ended_ = true;
+            return false;
+        }
+        clock_.AdvanceTo(step_scratch_.ts_ns);
+        ApplyMergedStep(step_scratch_);
+        matched_this_pop_ = false;
+        return true;
+    }
+
+    if (!merge_->PeekTs().has_value()) {
         ended_ = true;
         return false;
     }
-    clock_.AdvanceTo(step_scratch_.ts_ns);
-    ApplyMergedStep(step_scratch_);
+    const std::uint64_t pop = clock_.pop_ts_ns();
+    if (static_cast<std::uint64_t>(step_ns_) > std::numeric_limits<std::uint64_t>::max() - pop) {
+        ended_ = true;
+        return false;
+    }
+    const std::uint64_t next = pop + static_cast<std::uint64_t>(step_ns_);
+    while (const auto pending = merge_->PeekTs()) {
+        if (*pending > next) {
+            break;
+        }
+        if (!merge_->NextInto(step_scratch_)) {
+            ended_ = true;
+            return false;
+        }
+        ApplyMergedStep(step_scratch_);
+    }
+    clock_.AdvanceTo(next);
     matched_this_pop_ = false;
     return true;
+}
+
+void Population::SetStepNs(std::int64_t step_ns) {
+    if (step_ns == 0 || step_ns < -1) {
+        throw std::invalid_argument("population: step_ns must be -1 or > 0");
+    }
+    step_ns_ = step_ns;
 }
 
 OrderResult Population::ValidateNewOrder(const NewOrder& order) const {

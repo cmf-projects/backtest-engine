@@ -75,7 +75,9 @@ struct BusSlotConfig {
 // Engine → venue: open population on already-created queues.
 struct BusOpen {
     std::string population_id;
-    std::uint32_t tape_stride = 1;  // 0 or 1 → one event per tick
+    std::uint32_t tape_stride = 1;  // reserved: fold N dataset events into one tick
+    // -1: Advance follows dataset timestamps. > 0: fixed pop_ts step in nanoseconds.
+    std::int64_t step_ns = -1;
     std::vector<BusComponent> components;
     std::vector<BusSlotConfig> slots;
 };

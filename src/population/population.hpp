@@ -72,6 +72,11 @@ public:
 
     [[nodiscard]] bool Advance();
 
+    // -1: each Advance jumps to the next dataset timestamp.
+    // > 0: each Advance moves pop_ts by this many nanoseconds. Dataset snaps
+    // are applied when pop_ts reaches them; between snaps the book is kept.
+    void SetStepNs(std::int64_t step_ns);
+
     [[nodiscard]] bool started() const noexcept { return started_; }
     [[nodiscard]] bool ended() const noexcept { return ended_; }
     [[nodiscard]] const Clock& clock() const noexcept { return clock_; }
@@ -160,6 +165,8 @@ private:
     // Bumped once per Submit that carries cancels. Distinguishes a repeat cancel
     // inside that batch from a cancel in a later batch.
     std::uint32_t cancel_stamp_ = 0;
+    // -1 follows dataset timestamps. A positive value is a fixed pop_ts step.
+    std::int64_t step_ns_ = -1;
     OrderBatchResult submit_result_;
 };
 

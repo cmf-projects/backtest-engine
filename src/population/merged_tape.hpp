@@ -42,6 +42,9 @@ public:
     [[nodiscard]] std::uint64_t StartTs() const noexcept { return start_ts_; }
     [[nodiscard]] std::size_t component_count() const noexcept { return components_.size(); }
 
+    // Next event timestamp still waiting on a component tape, if any.
+    [[nodiscard]] std::optional<std::uint64_t> PeekTs() const { return MinPendingTs(); }
+
     // Next distinct ts on the merged timeline, or nullopt at EOF of all components.
     // Copies from the reused step buffer (tests / convenience).
     [[nodiscard]] std::optional<MergedStep> Next();

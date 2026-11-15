@@ -220,6 +220,12 @@ TEST(PopulationSession, BadImpactLambdaIsFatal) {
     }
 }
 
+TEST(PopulationSession, BadStepNsIsFatal) {
+    BusOpen open = MakeTestOpen("pop-step", 1);
+    open.step_ns = 0;
+    ExpectOpenRejected("pop-step", std::move(open), "step_ns");
+}
+
 TEST(PopulationSession, OpenTickAdvanceEndWithPopulation) {
     const std::string path = TempSockPath();
     auto listener = UdsListener::Bind(path);

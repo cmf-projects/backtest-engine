@@ -168,8 +168,12 @@ PopulationSession::Step PopulationSession::OnOpen(const std::vector<std::uint8_t
                                                       .tick_size = tick_size,
                                                       .tape = std::move(tape)});
         }
+        if (open.step_ns == 0 || open.step_ns < -1) {
+            throw std::runtime_error("bad step_ns");
+        }
         pop_ = std::make_unique<population::Population>(std::move(specs),
                                                         ToSlotConfigs(open.slots));
+        pop_->SetStepNs(open.step_ns);
         pop_->Start();
     } catch (const std::exception& ex) {
         const std::string msg = ex.what();
