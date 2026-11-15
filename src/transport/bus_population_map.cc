@@ -112,7 +112,7 @@ population::SlotConfig ToSlotConfig(const BusSlotConfig& in) {
     out.slot_id = in.slot_id;
     out.md_lag_ns = in.md_lag_ns;
     out.delta_ns = in.delta_ns;
-    if (!ParseDecimal(in.impact_lambda, out.impact_lambda) || out.impact_lambda < 0.0) {
+    if (!ParseDecimal(in.impact_lambda, out.impact_lambda) || !(out.impact_lambda > 0.0)) {
         throw std::invalid_argument("bad impact_lambda");
     }
     return out;

@@ -7,7 +7,7 @@
 //   - anything else is one SPOT component: JSONL, *.feather or a Feather delivery dir.
 // n_pops: concurrent populations on one UDS (default 1). Env CLIENT_POPS overrides.
 // Single component: env POPULATION_SEC_CODE (default SBER; Feather: raw_symbol, e.g. MGCZ5)
-// and POPULATION_TICK_SIZE (default 0.01).
+// POPULATION_TICK_SIZE (default 0.01) and POPULATION_IMPACT_LAMBDA (default 1e-15, must be > 0).
 
 #include "transport/bus_framing.hpp"
 #include "transport/bus_messages.hpp"
@@ -193,7 +193,7 @@ BusOpen MakeOpenSingle(const std::string& population_id, const std::string& data
         .slot_id = 1,
         .md_lag_ns = 0,
         .delta_ns = 1,
-        .impact_lambda = "0",
+        .impact_lambda = EnvOr("POPULATION_IMPACT_LAMBDA", "1e-15"),
     });
     return open;
 }
@@ -230,7 +230,7 @@ BusOpen MakeOpenBundle(const std::string& population_id, const std::string& dir)
         .slot_id = 1,
         .md_lag_ns = 0,
         .delta_ns = 1,
-        .impact_lambda = "0",
+        .impact_lambda = EnvOr("POPULATION_IMPACT_LAMBDA", "1e-15"),
     });
     return open;
 }

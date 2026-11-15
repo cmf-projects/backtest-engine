@@ -69,7 +69,7 @@ struct BusSlotConfig {
     std::uint32_t slot_id = 0;
     std::uint64_t md_lag_ns = 0;
     std::uint64_t delta_ns = 0;       // MUST be >= 1
-    std::string impact_lambda;       // decimal text; "0" = impact off
+    std::string impact_lambda;       // decimal text; must be > 0
 };
 
 // Engine → venue: open population on already-created queues.

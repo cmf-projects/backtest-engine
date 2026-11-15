@@ -1,7 +1,8 @@
 // Same-process smoke: UDS control + POSIX shm SPSC (client attaches by CreateAck names).
 // Usage: population_smoke [dataset] [uds_path]
 // dataset: JSONL, *.feather or a Feather delivery dir. Env POPULATION_SEC_CODE (default SBER;
-// Feather: raw_symbol, e.g. MGCZ5) and POPULATION_TICK_SIZE (default 0.01).
+// Feather: raw_symbol, e.g. MGCZ5), POPULATION_TICK_SIZE (default 0.01)
+// and POPULATION_IMPACT_LAMBDA (default 1e-15, must be > 0).
 
 #include "transport/bus_framing.hpp"
 #include "transport/bus_messages.hpp"
@@ -89,7 +90,7 @@ BusOpen MakeOpen(const std::string& population_id, const std::string& dataset) {
         .slot_id = 1,
         .md_lag_ns = 0,
         .delta_ns = 1,
-        .impact_lambda = "0",
+        .impact_lambda = EnvOr("POPULATION_IMPACT_LAMBDA", "1e-15"),
     });
     return open;
 }

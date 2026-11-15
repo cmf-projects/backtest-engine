@@ -112,7 +112,7 @@ BusOpen MakeTestOpen(std::string population_id, std::uint32_t n_slots) {
             .slot_id = i + 1,
             .md_lag_ns = 0,
             .delta_ns = 1,
-            .impact_lambda = "0",
+            .impact_lambda = "1e-15",
         });
     }
     return open;
@@ -212,8 +212,14 @@ TEST(PopulationSession, UnsupportedTickSizeIsFatal) {
 }
 
 TEST(PopulationSession, BadImpactLambdaIsFatal) {
-    for (const char* lambda : {"abc", "-1"}) {
-        const std::string id = std::string("pop-lam-") + (lambda[0] == 'a' ? "abc" : "neg");
+    for (const char* lambda : {"abc", "-1", "0"}) {
+        const char* tag = "zero";
+        if (lambda[0] == 'a') {
+            tag = "abc";
+        } else if (lambda[0] == '-') {
+            tag = "neg";
+        }
+        const std::string id = std::string("pop-lam-") + tag;
         BusOpen open = MakeTestOpen(id, 1);
         open.slots[0].impact_lambda = lambda;
         ExpectOpenRejected(id, std::move(open), "impact_lambda");

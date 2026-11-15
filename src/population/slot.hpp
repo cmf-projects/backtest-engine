@@ -11,7 +11,7 @@ struct SlotConfig {
     std::uint32_t slot_id = 0;
     std::uint64_t md_lag_ns = 0;
     std::uint64_t delta_ns = 0;      // MUST be >= 1
-    double impact_lambda = 0.0;      // 0 → impact off
+    double impact_lambda = 0.0;      // Open rejects <= 0; 0 here is impact off for in-process tests
 };
 
 // Throws std::invalid_argument on Δ == 0 or duplicate slot_id.
