@@ -7,6 +7,7 @@
 #include "transport/queue_registry.hpp"
 #include "transport/uds_framing.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <mutex>
@@ -89,10 +90,15 @@ enum class FinishSessionStatus : std::uint8_t {
 // Send SessionEnded on UDS, then drain SPSC in until BusClose | timeout, then
 // Destroy. If close_already_seen (engine Close arrived before SessionEnded),
 // destroy immediately after SessionEnded — do not wait for a second Close.
+// When `shutdown` is set, Close is waited at most 3s, then the queues are
+// destroyed without it.
+inline constexpr std::uint32_t kShutdownCloseWaitMs = 3'000;
+
 [[nodiscard]] FinishSessionStatus
 FinishSession(UdsConn &conn, QueueRegistry &registry, const SessionEnded &ended,
               std::uint32_t drain_timeout_ms = kDefaultDrainTimeoutMs,
-              bool close_already_seen = false);
+              bool close_already_seen = false,
+              std::atomic<bool> *shutdown = nullptr);
 
 [[nodiscard]] bool WaitSessionEnded(UdsConn &conn, SessionEnded &out);
 

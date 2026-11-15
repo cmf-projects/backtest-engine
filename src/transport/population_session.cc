@@ -95,7 +95,7 @@ FinishSessionStatus PopulationSession::FinishOk(ErrorCode reason, std::string me
     pop_.reset();
     return FinishSession(conn_, registry_,
                          MakeSessionEndedOk(cfg_.population_id, reason, std::move(message)),
-                         cfg_.drain_timeout_ms, close_already_seen);
+                         cfg_.drain_timeout_ms, close_already_seen, cfg_.shutdown);
 }
 
 FinishSessionStatus PopulationSession::FinishFatal(ErrorCode reason, std::string message,
@@ -107,7 +107,7 @@ FinishSessionStatus PopulationSession::FinishFatal(ErrorCode reason, std::string
     pop_.reset();
     return FinishSession(conn_, registry_,
                          MakeSessionEndedFatal(cfg_.population_id, reason, std::move(message)),
-                         cfg_.drain_timeout_ms, close_already_seen);
+                         cfg_.drain_timeout_ms, close_already_seen, cfg_.shutdown);
 }
 
 PopulationSession::Step PopulationSession::SendTickFromPopulation() {

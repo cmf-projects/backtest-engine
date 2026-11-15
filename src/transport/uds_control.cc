@@ -277,7 +277,8 @@ CreateAck RequestCreateQueues(UdsConn& conn, const CreateQueues& req) {
 }
 
 FinishSessionStatus FinishSession(UdsConn& conn, QueueRegistry& registry, const SessionEnded& ended,
-                                  std::uint32_t drain_timeout_ms, bool close_already_seen) {
+                                  std::uint32_t drain_timeout_ms, bool close_already_seen,
+                                  std::atomic<bool>* shutdown) {
     if (!conn.WriteFrame(ControlMsgType::SessionEnded, EncodeSessionEnded(ended))) {
         (void)registry.Destroy(ended.population_id);
         return FinishSessionStatus::Failed;
@@ -295,10 +296,24 @@ FinishSessionStatus FinishSession(UdsConn& conn, QueueRegistry& registry, const 
     }
 
     SpscBus in_bus(pair->in.get());
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(drain_timeout_ms);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(drain_timeout_ms);
+    bool shutdown_capped = false;
+    auto note_shutdown = [&] {
+        if (shutdown_capped || shutdown == nullptr ||
+            !shutdown->load(std::memory_order_relaxed)) {
+            return;
+        }
+        shutdown_capped = true;
+        const auto cap = std::chrono::steady_clock::now() +
+                         std::chrono::milliseconds(kShutdownCloseWaitMs);
+        if (cap < deadline) {
+            deadline = cap;
+        }
+    };
+    note_shutdown();
 
     while (std::chrono::steady_clock::now() < deadline) {
+        note_shutdown();
         BusMsgType type{};
         std::vector<std::uint8_t> payload;
         switch (in_bus.TryRecv(type, payload)) {

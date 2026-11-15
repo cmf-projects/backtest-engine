@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <string>
 #include <thread>
@@ -225,4 +226,52 @@ TEST(FinishSession, AlreadySeenCloseSkipsWait) {
     EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
     EXPECT_EQ(seen.population_id, "pop-4");
     EXPECT_EQ(registry.size(), 0u);
+}
+
+TEST(FinishSession, ShutdownWaitsThreeSecondsWithoutClose) {
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
+
+    FinishSessionStatus status = FinishSessionStatus::Failed;
+    std::atomic<bool> shutdown{true};
+
+    const auto started = std::chrono::steady_clock::now();
+    std::thread server([&] {
+        const int raw = listener.AcceptTimeout(5000);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
+            return;
+        }
+        status = FinishSession(conn, registry,
+                               MakeSessionEndedFatal("pop-stop", ErrorCode::Internal, "venue shutdown"),
+                               /*drain_timeout_ms=*/30'000, /*close_already_seen=*/false, &shutdown);
+    });
+
+    std::thread client([&] {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (RequestCreateQueues(conn, CreateQueues{.population_id = "pop-stop"}).status !=
+            AckStatus::Ok) {
+            return;
+        }
+        SessionEnded ended;
+        (void)WaitSessionEnded(conn, ended);
+        // No Close. Venue must destroy the queues on its own.
+    });
+
+    server.join();
+    client.join();
+
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    EXPECT_EQ(status, FinishSessionStatus::TimedOut);
+    EXPECT_EQ(registry.size(), 0u);
+    EXPECT_GE(elapsed, std::chrono::milliseconds(3'000));
+    EXPECT_LT(elapsed, std::chrono::milliseconds(4'500));
 }
