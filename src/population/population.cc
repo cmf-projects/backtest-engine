@@ -305,6 +305,86 @@ void Population::MatchDueIfNeeded() {
     matched_this_pop_ = true;
 }
 
+namespace {
+
+[[nodiscard]] bool SameLevels(const std::vector<Level>& a, const std::vector<Level>& b) {
+    if (a.size() != b.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (a[i].price != b[i].price || a[i].qty != b[i].qty) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+bool Population::SeedSharedFirstTick() {
+    for (const auto& [_, state] : slot_send_) {
+        for (const auto& [__, send] : state.components) {
+            if (send.has_sent) {
+                return false;
+            }
+        }
+    }
+    if (slots_.empty()) {
+        return false;
+    }
+
+    struct Sides {
+        std::vector<Level> bids;
+        std::vector<Level> asks;
+    };
+    auto capture = [&](const SlotConfig& cfg, const Component& component, Sides& out) {
+        const ImpactState& impact =
+            slot_impact_.at(SlotComponentKey{cfg.slot_id, component.component_id()});
+        if (!impact.enabled()) {
+            const SnapshotEvent& snap = ViewSnap(cfg, component);
+            out.bids = snap.bids;
+            out.asks = snap.asks;
+            return;
+        }
+        EffectiveViewInto(cfg, component, view_scratch_);
+        out.bids = view_scratch_.bids;
+        out.asks = view_scratch_.asks;
+    };
+
+    std::vector<SharedBookView> shared;
+    for (const Component& component : components_) {
+        if (!component.present()) {
+            continue;
+        }
+        Sides seed;
+        capture(slots_.front(), component, seed);
+        for (std::size_t si = 1; si < slots_.size(); ++si) {
+            Sides other;
+            capture(slots_[si], component, other);
+            if (!SameLevels(seed.bids, other.bids) || !SameLevels(seed.asks, other.asks)) {
+                return false;
+            }
+        }
+        SharedBookView book;
+        book.component_id = component.component_id();
+        book.kind = BookPatchKind::Keyframe;
+        book.bids = std::move(seed.bids);
+        book.asks = std::move(seed.asks);
+        shared.push_back(std::move(book));
+    }
+
+    for (const SharedBookView& book : shared) {
+        for (const SlotConfig& cfg : slots_) {
+            ComponentSend& send = slot_send_.at(cfg.slot_id).components[book.component_id];
+            send.last_bids = book.bids;
+            send.last_asks = book.asks;
+            send.has_sent = true;
+        }
+    }
+    tick_scratch_.books = std::move(shared);
+    return true;
+}
+
 const TickView& Population::MakeTick() {
     if (!started_) {
         throw std::logic_error("population: MakeTick before Start");
@@ -321,7 +401,8 @@ const TickView& Population::MakeTick() {
             tick_scratch_.slots[i].trades.reserve(kTradeCapacity);
         }
     }
-    // Shared tick.books unused when md_lag may differ per slot.
+    // Shared keyframe once, when every slot still sees the same snap.
+    const bool shared = SeedSharedFirstTick();
 
     for (std::size_t si = 0; si < slots_.size(); ++si) {
         const SlotConfig& cfg = slots_[si];
@@ -330,6 +411,10 @@ const TickView& Population::MakeTick() {
         // Swap keeps a capacitous trades buffer in pending_trades_ for MatchDue.
         slot_tick.trades.swap(pending_trades_[cfg.slot_id]);
         pending_trades_[cfg.slot_id].clear();
+        if (shared) {
+            slot_tick.books.resize(0);
+            continue;
+        }
 
         SlotSendState& sent = slot_send_.at(cfg.slot_id);
         std::size_t book_n = 0;

@@ -49,7 +49,7 @@ PopulationSession::PopulationSession(UdsConn& conn, QueueRegistry& registry, Ses
 }
 
 bool PopulationSession::SendOut(BusMsgType type, const std::vector<std::uint8_t>& payload) {
-    return out_.TrySend(type, payload);
+    return out_.TrySend(type, payload, StallDeadline(), cfg_.shutdown);
 }
 
 BusRecvResult PopulationSession::RecvIn(BusMsgType& type, std::vector<std::uint8_t>& payload) {
@@ -95,7 +95,8 @@ FinishSessionStatus PopulationSession::FinishFatal(ErrorCode reason, std::string
                                                    bool close_already_seen) {
     phase_ = SessionPhase::Finished;
     EncodeBusErrorInto(BusError{.code = reason, .message = message}, encode_buf_);
-    (void)SendOut(BusMsgType::Error, encode_buf_);
+    // Best-effort. A full ring already burned the drain deadline; do not wait again.
+    (void)out_.TrySend(BusMsgType::Error, encode_buf_);
     pop_.reset();
     return FinishSession(conn_, registry_,
                          MakeSessionEndedFatal(cfg_.population_id, reason, std::move(message)),
@@ -122,7 +123,7 @@ PopulationSession::Step PopulationSession::SendTickFromPopulation() {
 #endif
     EncodeBusTickInto(tick_buf_, encode_buf_);
     if (!SendOut(BusMsgType::Tick, encode_buf_)) {
-        return FinishFatal(ErrorCode::Internal, "Tick send failed", false);
+        return FinishFatal(ErrorCode::DrainTimeout, "ring full before drain_timeout", false);
     }
     phase_ = SessionPhase::AwaitOrderOrAdvance;
     return std::nullopt;

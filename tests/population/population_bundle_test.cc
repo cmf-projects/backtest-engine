@@ -19,6 +19,7 @@ using population::NewOrder;
 using population::OrderBatch;
 using population::OrderResult;
 using population::Population;
+using population::SharedBookView;
 using population::Side;
 using population::SlotBookUpdateView;
 using population::SlotConfig;
@@ -51,6 +52,15 @@ std::vector<SlotConfig> OneSlot() {
 
 const SlotBookUpdateView* FindBook(const std::vector<SlotBookUpdateView>& books,
                                    const std::string& id) {
+    for (const auto& b : books) {
+        if (b.component_id == id) {
+            return &b;
+        }
+    }
+    return nullptr;
+}
+
+const SharedBookView* FindShared(const std::vector<SharedBookView>& books, const std::string& id) {
     for (const auto& b : books) {
         if (b.component_id == id) {
             return &b;
@@ -181,9 +191,9 @@ TEST(PopulationBundle, MakeTickSpotAndFutKeyframes) {
     const auto tick0 = pop.MakeTick();
     EXPECT_EQ(tick0.pop_ts_ns, 100u);
     ASSERT_EQ(tick0.slots.size(), 1u);
-    ASSERT_EQ(tick0.slots[0].books.size(), 2u);
-    const auto* fut0 = FindBook(tick0.slots[0].books, "fut");
-    const auto* spot0 = FindBook(tick0.slots[0].books, "spot");
+    EXPECT_TRUE(tick0.slots[0].books.empty());
+    const auto* fut0 = FindShared(tick0.books, "fut");
+    const auto* spot0 = FindShared(tick0.books, "spot");
     ASSERT_NE(fut0, nullptr);
     ASSERT_NE(spot0, nullptr);
     EXPECT_EQ(fut0->kind, BookPatchKind::Keyframe);
@@ -235,10 +245,11 @@ TEST(PopulationBundle, MakeTickOnlyFutUntilSpotStarts) {
     const auto tick0 = pop.MakeTick();
     EXPECT_EQ(tick0.pop_ts_ns, 100u);
     ASSERT_EQ(tick0.slots.size(), 1u);
-    ASSERT_EQ(tick0.slots[0].books.size(), 1u);
-    EXPECT_EQ(tick0.slots[0].books[0].component_id, "fut");
-    EXPECT_EQ(tick0.slots[0].books[0].kind, BookPatchKind::Keyframe);
-    EXPECT_EQ(FindBook(tick0.slots[0].books, "spot"), nullptr);
+    EXPECT_TRUE(tick0.slots[0].books.empty());
+    ASSERT_EQ(tick0.books.size(), 1u);
+    EXPECT_EQ(tick0.books[0].component_id, "fut");
+    EXPECT_EQ(tick0.books[0].kind, BookPatchKind::Keyframe);
+    EXPECT_EQ(FindShared(tick0.books, "spot"), nullptr);
 
     ASSERT_TRUE(pop.Advance());
     const auto tick1 = pop.MakeTick();

@@ -3,11 +3,14 @@
 // Typed bus over a PopulationQueue.
 // Large payloads are split across slots: First / Cont / Last.
 // Slot layout (LE): type u32 | flags u8 | pad3 | total u32 | offset u32 | chunk u32 | bytes
-// On full mid-send: return false (no Abort). Session waits drain_timeout then kills the pop.
+// A full ring fails the non-blocking send. The waiting overload retries the same
+// chunk until `deadline` or `stop`, so a reader can drain mid-message.
 
 #include "transport/bus_messages.hpp"
 #include "transport/queue_types.hpp"
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <vector>
 
@@ -33,8 +36,14 @@ public:
 
     [[nodiscard]] bool valid() const noexcept { return queue_ != nullptr; }
 
-    // Split if needed; false if too large, queue full, or invalid. Does not Abort.
+    // Split if needed. False if too large, the ring is full, or the type is invalid.
     [[nodiscard]] bool TrySend(BusMsgType type, const std::vector<std::uint8_t>& payload);
+
+    // Same split. When the ring is full, wait for the reader until `deadline`.
+    // `stop` set, or the deadline, fails the send; bytes already pushed stay.
+    [[nodiscard]] bool TrySend(BusMsgType type, const std::vector<std::uint8_t>& payload,
+                               std::chrono::steady_clock::time_point deadline,
+                               const std::atomic<bool>* stop = nullptr);
 
     // Reassembles fragments. Protocol violations → ProtocolError (not silent skip).
     [[nodiscard]] BusRecvResult TryRecv(BusMsgType& type, std::vector<std::uint8_t>& payload);

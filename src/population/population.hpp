@@ -59,8 +59,9 @@ public:
 
     void Start();
 
-    // TZ §5.4: recover impact → match due vs effective copy → md_lag patches +
-    // trades. Shared tick.books unused. Reuses internal scratch; valid until next
+    // TZ §5.4: recover impact → match due vs effective copy → patches +
+    // trades. The first tick's common book is `Tick.books`; later patches
+    // are per slot. Reuses internal scratch; valid until the next
     // MakeTick/Advance/Submit.
     [[nodiscard]] const TickView& MakeTick();
 
@@ -126,6 +127,9 @@ private:
     void ApplyMergedStep(const MergedStep& step);
     void TrimWindowForLags();
     void MatchDueIfNeeded();
+    // First send, and only when every slot sees the same book: one shared
+    // keyframe per component. Records that book as each slot's last send.
+    [[nodiscard]] bool SeedSharedFirstTick();
 
     [[nodiscard]] OrderResult ValidateNewOrder(const NewOrder& order) const;
     [[nodiscard]] OrderResult ValidateCancel(const CancelOrder& cancel) const;

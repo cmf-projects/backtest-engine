@@ -12,10 +12,10 @@ namespace population {
 // In-memory Tick (population ↔ transport map).
 //
 // Cadence:
-// - `Tick.books` (shared) unused in P0 with per-slot md_lag.
-// - Each slot: Keyframe on first send; else Diff of file view at
-//   pop_ts - md_lag vs that slot's last sent book. A side longer than
-//   64 rows is sent as a Keyframe of the full view instead.
+// - `Tick.books`: one shared keyframe per component on the first tick,
+//   when every slot still sees that same snap.
+// - Later ticks: per-slot Diff of the slot's own view against the book it
+//   was seeded with. A side longer than 64 rows is a per-slot Keyframe.
 
 enum class BookPatchKind {
     Keyframe,

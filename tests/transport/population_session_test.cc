@@ -268,11 +268,12 @@ TEST(PopulationSession, OpenTickAdvanceEndWithPopulation) {
         }
         BusTick tick;
         if (!DecodeBusTick(payload.data(), payload.size(), tick) || tick.pop_ts_ns != 100u ||
-            tick.slots.size() != 1u || tick.slots[0].books.empty()) {
+            tick.slots.size() != 1u || tick.n_books != 1u || tick.books.empty() ||
+            tick.slots[0].n_books != 0u) {
             return;
         }
-        EXPECT_EQ(tick.slots[0].books[0].component_id, "SPOT");
-        EXPECT_FALSE(tick.slots[0].books[0].bids.empty());
+        EXPECT_EQ(tick.books[0].component_id, "SPOT");
+        EXPECT_FALSE(tick.books[0].bids.empty());
 
         // Advance to second event → another Tick.
         if (!in.TrySend(BusMsgType::Advance, EncodeBusAdvance())) {
@@ -1085,5 +1086,74 @@ TEST(PopulationSession, DuplicateTimestampOnAdvanceIsFatal) {
 
     EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
     EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+    EXPECT_EQ(registry.size(), 0u);
+}
+
+TEST(PopulationSession, FullRingTimeoutIsFatal) {
+    // First tick is larger than the ring. Nobody reads it, so the send waits
+    // out drain_timeout and the session ends fatal.
+    constexpr int kSlots = 5000;
+    constexpr int kLevels = 10;
+    std::vector<Level> bids;
+    std::vector<Level> asks;
+    bids.reserve(kLevels);
+    asks.reserve(kLevels);
+    for (int i = 0; i < kLevels; ++i) {
+        bids.push_back(Level{100.0 - i * 0.01, 10});
+        asks.push_back(Level{101.0 + i * 0.01, 10});
+    }
+
+    const std::string path = TempSockPath();
+    auto listener = UdsListener::Bind(path);
+    QueueRegistry registry;
+
+    FinishSessionStatus status = FinishSessionStatus::Failed;
+    SessionEnded ended;
+
+    std::thread server([&] {
+        const int raw = listener.AcceptTimeout(5000);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        if (ServeCreateQueues(conn, registry).status != AckStatus::Ok) {
+            return;
+        }
+        SessionConfig cfg = MakeCfg("pop-full", {Ev(1, 100, bids, asks)});
+        cfg.drain_timeout_ms = 300;
+        PopulationSession session(conn, registry, std::move(cfg));
+        status = session.Run();
+    });
+
+    std::thread client([&] {
+        const int raw = UdsConnect(path);
+        if (raw < 0) {
+            return;
+        }
+        UdsConn conn(raw);
+        const auto ack = RequestCreateQueues(conn, CreateQueues{.population_id = "pop-full"});
+        if (ack.status != AckStatus::Ok) {
+            return;
+        }
+
+        SpscBus in(registry.FindIn(ack.in_queue));
+        BusOpen open = MakeTestOpen("pop-full", kSlots);
+        if (!in.TrySend(BusMsgType::Open, EncodeBusOpen(open))) {
+            return;
+        }
+
+        ASSERT_TRUE(WaitSessionEnded(conn, ended));
+        EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+        EXPECT_EQ(ended.reason_code, ErrorCode::DrainTimeout);
+        EXPECT_FALSE(ended.message.empty());
+        (void)in.TrySend(BusMsgType::Close, EncodeBusClose());
+    });
+
+    server.join();
+    client.join();
+
+    EXPECT_EQ(status, FinishSessionStatus::ClosedByClient);
+    EXPECT_EQ(ended.status, SessionEndStatus::Fatal);
+    EXPECT_EQ(ended.reason_code, ErrorCode::DrainTimeout);
     EXPECT_EQ(registry.size(), 0u);
 }

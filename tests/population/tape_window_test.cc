@@ -73,8 +73,9 @@ TEST(FileBook, AppendsHistoryOnAdvance) {
 
     const auto tick = pop.MakeTick();
     EXPECT_EQ(tick.pop_ts_ns, 300u);
+    ASSERT_EQ(tick.books.size(), 1u);
+    EXPECT_EQ(tick.books[0].kind, population::BookPatchKind::Keyframe);
+    EXPECT_EQ(tick.books[0].bids[0].qty, 6u);
     ASSERT_EQ(tick.slots.size(), 1u);
-    ASSERT_EQ(tick.slots[0].books.size(), 1u);
-    EXPECT_EQ(tick.slots[0].books[0].kind, population::BookPatchKind::Keyframe);
-    EXPECT_EQ(tick.slots[0].books[0].bids[0].qty, 6u);
+    EXPECT_TRUE(tick.slots[0].books.empty());
 }

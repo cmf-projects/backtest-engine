@@ -1,6 +1,8 @@
 #include "transport/spsc_bus.hpp"
 
+#include <chrono>
 #include <cstring>
+#include <thread>
 
 namespace transport {
 namespace {
@@ -44,6 +46,12 @@ bool SpscBus::PushSlot(BusMsgType type, std::uint8_t flags, std::uint32_t total,
 }
 
 bool SpscBus::TrySend(BusMsgType type, const std::vector<std::uint8_t>& payload) {
+    return TrySend(type, payload, std::chrono::steady_clock::time_point::min(), nullptr);
+}
+
+bool SpscBus::TrySend(BusMsgType type, const std::vector<std::uint8_t>& payload,
+                      std::chrono::steady_clock::time_point deadline,
+                      const std::atomic<bool>* stop) {
     if (queue_ == nullptr) {
         return false;
     }
@@ -60,6 +68,7 @@ bool SpscBus::TrySend(BusMsgType type, const std::vector<std::uint8_t>& payload)
                         nullptr, 0);
     }
 
+    const bool wait = deadline != std::chrono::steady_clock::time_point::min();
     std::uint32_t offset = 0;
     while (offset < total) {
         const std::uint32_t remaining = total - offset;
@@ -75,10 +84,12 @@ bool SpscBus::TrySend(BusMsgType type, const std::vector<std::uint8_t>& payload)
             flags |= kBusFlagLast;
         }
 
-        if (!PushSlot(type, flags, total, offset, payload.data() + offset, chunk)) {
-            // Ring full / stall: no Abort (won't fit either). Session → drain_timeout
-            // + SessionEnded{fatal}. Partial fragments stay until pop teardown.
-            return false;
+        while (!PushSlot(type, flags, total, offset, payload.data() + offset, chunk)) {
+            if (!wait || std::chrono::steady_clock::now() >= deadline ||
+                (stop != nullptr && stop->load(std::memory_order_relaxed))) {
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         offset += chunk;
     }

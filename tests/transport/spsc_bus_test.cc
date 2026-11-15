@@ -4,7 +4,10 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <numeric>
+#include <thread>
+#include <vector>
 
 using transport::AckStatus;
 using transport::BusAssetRole;
@@ -181,4 +184,63 @@ TEST(SpscBus, SoftCapRejected) {
 
     std::vector<std::uint8_t> huge(kMaxLogicalBusBytes + 1, 0xab);
     EXPECT_FALSE(out.TrySend(BusMsgType::Tick, huge));
+}
+
+TEST(SpscBus, SendLargerThanRingWaitsForReader) {
+    QueueRegistry reg;
+    auto created = reg.Create("pop-wide");
+    auto* queue = reg.FindOut(created.out_queue);
+    ASSERT_NE(queue, nullptr);
+    SpscBus sender(queue);
+    SpscBus reader(queue);
+
+    // One byte past an empty ring: the send has to wait for a pop.
+    const std::size_t nbytes =
+        transport::kMaxBusChunkBytes * (transport::kQueueCapacity - 1) + 1;
+    std::vector<std::uint8_t> big(nbytes, 0xcd);
+
+    std::vector<std::uint8_t> got;
+    BusMsgType got_type{};
+    std::thread consumer([&] {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (reader.TryRecv(got_type, got) == transport::BusRecvResult::Message) {
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    ASSERT_TRUE(sender.TrySend(BusMsgType::Tick, big, deadline));
+    consumer.join();
+    EXPECT_EQ(got_type, BusMsgType::Tick);
+    EXPECT_EQ(got, big);
+}
+
+TEST(SpscBus, NonBlockingSendDoesNotWaitWhenRingIsFull) {
+    QueueRegistry reg;
+    auto created = reg.Create("pop-nowait");
+    SpscBus out(reg.FindOut(created.out_queue));
+    const std::size_t nbytes =
+        transport::kMaxBusChunkBytes * (transport::kQueueCapacity - 1) + 1;
+    std::vector<std::uint8_t> big(nbytes, 0xab);
+    const auto started = std::chrono::steady_clock::now();
+    EXPECT_FALSE(out.TrySend(BusMsgType::Tick, big));
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::milliseconds(200));
+}
+
+TEST(SpscBus, WaitingSendFailsWhenDeadlinePasses) {
+    QueueRegistry reg;
+    auto created = reg.Create("pop-deadline");
+    SpscBus out(reg.FindOut(created.out_queue));
+    const std::size_t nbytes =
+        transport::kMaxBusChunkBytes * (transport::kQueueCapacity - 1) + 1;
+    std::vector<std::uint8_t> big(nbytes, 0x11);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+    const auto started = std::chrono::steady_clock::now();
+    EXPECT_FALSE(out.TrySend(BusMsgType::Tick, big, deadline));
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    EXPECT_GE(elapsed, std::chrono::milliseconds(50));
+    EXPECT_LT(elapsed, std::chrono::milliseconds(500));
 }
