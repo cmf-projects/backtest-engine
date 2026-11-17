@@ -121,7 +121,7 @@ bool RunPopulationLoop(PopHandle& pop, const Config& cfg, EndedHub& hub) {
     BusTick tick;
     BusOrderBatch batch;
     batch.orders.reserve(8);
-    std::vector<const transport::BusBookUpdate*> books;
+    std::vector<RememberedBook> books;
     books.reserve(4);
     BusOrdersAck orders_ack;
 

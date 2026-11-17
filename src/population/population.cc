@@ -517,16 +517,22 @@ bool Population::Advance() {
         return true;
     }
 
-    if (!merge_->PeekTs().has_value()) {
+    const auto pending_ts = merge_->PeekTs();
+    if (!pending_ts.has_value()) {
         ended_ = true;
         return false;
     }
     const std::uint64_t pop = clock_.pop_ts_ns();
-    if (static_cast<std::uint64_t>(step_ns_) > std::numeric_limits<std::uint64_t>::max() - pop) {
-        ended_ = true;
-        return false;
+    std::uint64_t next = 0;
+    if (*pending_ts > pop && (*pending_ts - pop) > kSessionGapNs) {
+        next = *pending_ts;
+    } else {
+        if (static_cast<std::uint64_t>(step_ns_) > std::numeric_limits<std::uint64_t>::max() - pop) {
+            ended_ = true;
+            return false;
+        }
+        next = pop + static_cast<std::uint64_t>(step_ns_);
     }
-    const std::uint64_t next = pop + static_cast<std::uint64_t>(step_ns_);
     while (const auto pending = merge_->PeekTs()) {
         if (*pending > next) {
             break;

@@ -60,9 +60,21 @@ struct RunStats {
 
 void NoteTrades(const transport::BusTick& tick, DensePending& pending, RunStats& stats);
 
-// Every `order_every` ticks, IOC one side: best ask or best bid, on each live book.
+// Last known touch. Quiet ticks omit the book; this keeps bid and ask.
+struct RememberedBook {
+    std::string component_id;
+    bool has_bid = false;
+    bool has_ask = false;
+    transport::BusPrice bid{};
+    transport::BusPrice ask{};
+    std::uint64_t bid_qty = 0;
+    std::uint64_t ask_qty = 0;
+};
+
+// Fold this tick's book patches into `memory`. Every `order_every` ticks, IOC
+// one side on each remembered touch: buy the ask, or sell the bid.
 void MakeTakeBatch(const transport::BusTick& tick, int tick_n, int order_every,
                    std::uint64_t& next_oid, DensePending& pending, transport::BusOrderBatch& batch,
-                   std::vector<const transport::BusBookUpdate*>& books);
+                   std::vector<RememberedBook>& memory);
 
 }  // namespace client

@@ -22,7 +22,7 @@ struct Config {
     // Clock step. -1 follows dataset timestamps.
     std::int64_t step_ns = 100'000'000;
     std::string impact_lambda = "1e-15";
-    int order_every_ticks = 8;
+    int order_every_ticks = 4;
 
     bool ok = true;
 };

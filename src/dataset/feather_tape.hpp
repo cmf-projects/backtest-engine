@@ -12,6 +12,8 @@
 
 namespace dataset {
 
+struct DaySlabPool;
+
 // Adapter: Databento bbo-1m Feather deliveries → population::Tape.
 //
 // Each part holds one top-of-book row per instrument per interval for many
@@ -27,6 +29,7 @@ namespace dataset {
 class FeatherBboTape final : public population::Tape {
 public:
     FeatherBboTape(std::string path, std::string symbol);
+    ~FeatherBboTape() override;
 
     [[nodiscard]] const std::string& path() const noexcept { return path_; }
 
@@ -49,6 +52,9 @@ private:
 
     std::string path_;
     std::string symbol_;
+    // One decompress buffer for every part. Starts at 2× the first day and
+    // grows by 2× the shortage when a later day does not fit.
+    std::unique_ptr<DaySlabPool> slab_;
     std::vector<std::filesystem::path> parts_;
     std::size_t next_part_ = 0;
     std::vector<Row> rows_;  // current part, `symbol_` only
