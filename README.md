@@ -50,6 +50,16 @@ Engine flow: connect UDS → `CreateQueues` → mmap shm names from `CreateAck` 
 `Open` / `Tick` / `OrderBatch` / `Advance` / `Close`.  
 `dataset_path` in Open is opened **by the venue** (path must exist on the venue host).
 
+**Feather book (MGCZ5)** — same two terminals, repo cwd. The client opens `data` as three legs (SPOT, FUT, OPT) on one symbol. Step, lag, order delay, and `order_every_ticks` come from `options/population_client.toml` (100 ms step, IOC every 4th tick).
+
+```bash
+# terminal 1
+make population
+# terminal 2
+POPULATION_SEC_CODE=MGCZ5 POPULATION_TICK_SIZE=0.1 \
+  ./build/population_client /tmp/cmf-population.sock data
+```
+
 **Noise bundle (spot / fut / option):** generate white-noise tapes, then point the client at the directory:
 
 ```bash
