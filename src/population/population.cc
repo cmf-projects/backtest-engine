@@ -14,8 +14,6 @@ namespace population {
 
 namespace {
 
-constexpr std::size_t kMaxComponents = 3;
-
 std::vector<ComponentSpec> MakeSingleSpec(std::string component_id, double tick_size,
                                           TapePtr tape) {
     std::vector<ComponentSpec> specs;
@@ -69,6 +67,7 @@ Population::Population(std::vector<ComponentSpec> components, std::vector<SlotCo
         }
         Component state;
         state.component_id_ = spec.component_id;
+        state.index_ = components_.size();
         state.tick_size_ = spec.tick_size;
         components_.push_back(std::move(state));
         merged.push_back(MergedComponent{.component_id = spec.component_id,
@@ -84,18 +83,14 @@ Population::Population(std::vector<ComponentSpec> components, std::vector<SlotCo
     diff_scratch_.asks.reserve(kMaxDiffLevelsPerSide);
 
     ValidateSlots(slots_);
-    for (const SlotConfig& cfg : slots_) {
-        slot_send_.emplace(cfg.slot_id, SlotSendState{});
-        slot_orders_.emplace(cfg.slot_id, SlotOrders{});
-        std::vector<Trade> trades;
-        trades.reserve(kTradeCapacity);
-        pending_trades_.emplace(cfg.slot_id, std::move(trades));
-        for (const Component& component : components_) {
-            ComponentSend& send = slot_send_.at(cfg.slot_id).components[component.component_id()];
-            send.last_bids.reserve(kMaxLevelsPerSide);
-            send.last_asks.reserve(kMaxLevelsPerSide);
-            slot_impact_.emplace(SlotComponentKey{cfg.slot_id, component.component_id()},
-                                 ImpactState{cfg.impact_lambda});
+    slot_state_.resize(slots_.size());
+    for (std::size_t si = 0; si < slots_.size(); ++si) {
+        SlotState& state = slot_state_[si];
+        state.pending.reserve(kTradeCapacity);
+        for (std::size_t ci = 0; ci < components_.size(); ++ci) {
+            state.send[ci].last_bids.reserve(kMaxLevelsPerSide);
+            state.send[ci].last_asks.reserve(kMaxLevelsPerSide);
+            state.impact[ci] = ImpactState{slots_[si].impact_lambda};
         }
     }
     std::uint64_t max_lag = 0;
@@ -113,8 +108,26 @@ Population::Population(std::string component_id, double tick_size, TapePtr tape,
     : Population(MakeSingleSpec(std::move(component_id), tick_size, std::move(tape)),
                  std::move(slots)) {}
 
+const Population::SlotState* Population::FindSlotState(std::uint32_t slot_id) const {
+    for (std::size_t i = 0; i < slots_.size(); ++i) {
+        if (slots_[i].slot_id == slot_id) {
+            return &slot_state_[i];
+        }
+    }
+    return nullptr;
+}
+
+Population::SlotState* Population::FindSlotState(std::uint32_t slot_id) {
+    for (std::size_t i = 0; i < slots_.size(); ++i) {
+        if (slots_[i].slot_id == slot_id) {
+            return &slot_state_[i];
+        }
+    }
+    return nullptr;
+}
+
 bool Population::HasSlot(std::uint32_t slot_id) const {
-    return slot_send_.find(slot_id) != slot_send_.end();
+    return FindSlotState(slot_id) != nullptr;
 }
 
 bool Population::HasComponent(const std::string& component_id) const {
@@ -163,20 +176,21 @@ const Component& Population::book() const {
 }
 
 const SlotOrders* Population::SlotBook(std::uint32_t slot_id) const {
-    const auto it = slot_orders_.find(slot_id);
-    if (it == slot_orders_.end()) {
+    const SlotState* state = FindSlotState(slot_id);
+    if (state == nullptr) {
         return nullptr;
     }
-    return &it->second;
+    return &state->orders;
 }
 
 const ImpactState* Population::SlotImpact(std::uint32_t slot_id,
                                           const std::string& component_id) const {
-    const auto it = slot_impact_.find(SlotComponentKey{slot_id, component_id});
-    if (it == slot_impact_.end()) {
+    const SlotState* state = FindSlotState(slot_id);
+    const Component* component = FindComponent(component_id);
+    if (state == nullptr || component == nullptr) {
         return nullptr;
     }
-    return &it->second;
+    return &state->impact[component->index_];
 }
 
 const ImpactState* Population::SlotImpact(std::uint32_t slot_id) const {
@@ -241,15 +255,14 @@ const SnapshotEvent* Population::ViewSnap(const SlotConfig& cfg,
 }
 
 bool Population::EffectiveViewInto(const SlotConfig& cfg, const Component& component,
-                                   SnapshotEvent& out) const {
+                                   const ImpactState& impact, SnapshotEvent& out) const {
     // TZ §8.4 P0: old file snap @ view_ts, minus *current* eaten (not historical).
     const SnapshotEvent* snap = ViewSnap(cfg, component);
     if (snap == nullptr) {
         return false;
     }
     AssignSnapshot(out, *snap);
-    slot_impact_.at(SlotComponentKey{cfg.slot_id, component.component_id()})
-        .ApplyTo(out.bids, out.asks, component.tick_size());
+    impact.ApplyTo(out.bids, out.asks, component.tick_size());
     return true;
 }
 
@@ -283,23 +296,23 @@ void Population::MatchDueIfNeeded() {
         return;
     }
 
-    for (const SlotConfig& cfg : slots_) {
-        auto& pending = pending_trades_[cfg.slot_id];
-        pending.clear();
-        for (const Component& component : components_) {
+    for (std::size_t si = 0; si < slots_.size(); ++si) {
+        SlotState& state = slot_state_[si];
+        state.pending.clear();
+        for (std::size_t ci = 0; ci < components_.size(); ++ci) {
+            const Component& component = components_[ci];
             if (!component.present()) {
                 continue;
             }
             match_bids_scratch_ = component.current().bids;
             match_asks_scratch_ = component.current().asks;
-            ImpactState& impact =
-                slot_impact_.at(SlotComponentKey{cfg.slot_id, component.component_id()});
+            ImpactState& impact = state.impact[ci];
             impact.Recover(component.current().bids, component.current().asks, pop,
                            component.tick_size());
             impact.ApplyTo(match_bids_scratch_, match_asks_scratch_, component.tick_size());
-            slot_orders_.at(cfg.slot_id)
-                .MatchDue(pop, match_bids_scratch_, match_asks_scratch_, component.tick_size(),
-                          &impact, component.component_id(), pending);
+            state.orders.MatchDue(pop, match_bids_scratch_, match_asks_scratch_,
+                                  component.tick_size(), &impact, component.component_id(),
+                                  state.pending);
         }
     }
 
@@ -324,9 +337,9 @@ namespace {
 }  // namespace
 
 bool Population::SeedSharedFirstTick() {
-    for (const auto& [_, state] : slot_send_) {
-        for (const auto& [__, send] : state.components) {
-            if (send.has_sent) {
+    for (const SlotState& state : slot_state_) {
+        for (std::size_t ci = 0; ci < components_.size(); ++ci) {
+            if (state.send[ci].has_sent) {
                 return false;
             }
         }
@@ -339,11 +352,11 @@ bool Population::SeedSharedFirstTick() {
         std::vector<Level> bids;
         std::vector<Level> asks;
     };
-    auto capture = [&](const SlotConfig& cfg, const Component& component, Sides& out) -> bool {
-        const ImpactState& impact =
-            slot_impact_.at(SlotComponentKey{cfg.slot_id, component.component_id()});
+    auto capture = [&](std::size_t si, std::size_t ci, Sides& out) -> bool {
+        const Component& component = components_[ci];
+        const ImpactState& impact = slot_state_[si].impact[ci];
         if (!impact.enabled()) {
-            const SnapshotEvent* snap = ViewSnap(cfg, component);
+            const SnapshotEvent* snap = ViewSnap(slots_[si], component);
             if (snap == nullptr) {
                 return false;
             }
@@ -351,7 +364,7 @@ bool Population::SeedSharedFirstTick() {
             out.asks = snap->asks;
             return true;
         }
-        if (!EffectiveViewInto(cfg, component, view_scratch_)) {
+        if (!EffectiveViewInto(slots_[si], component, impact, view_scratch_)) {
             return false;
         }
         out.bids = view_scratch_.bids;
@@ -360,18 +373,20 @@ bool Population::SeedSharedFirstTick() {
     };
 
     std::vector<SharedBookView> shared;
-    for (const Component& component : components_) {
+    std::vector<std::size_t> shared_ci;
+    for (std::size_t ci = 0; ci < components_.size(); ++ci) {
+        const Component& component = components_[ci];
         if (!component.present()) {
             continue;
         }
         Sides seed;
-        if (!capture(slots_.front(), component, seed)) {
+        if (!capture(0, ci, seed)) {
             return false;
         }
         for (std::size_t si = 1; si < slots_.size(); ++si) {
             Sides other;
-            if (!capture(slots_[si], component, other) ||
-                !SameLevels(seed.bids, other.bids) || !SameLevels(seed.asks, other.asks)) {
+            if (!capture(si, ci, other) || !SameLevels(seed.bids, other.bids) ||
+                !SameLevels(seed.asks, other.asks)) {
                 return false;
             }
         }
@@ -381,13 +396,14 @@ bool Population::SeedSharedFirstTick() {
         book.bids = std::move(seed.bids);
         book.asks = std::move(seed.asks);
         shared.push_back(std::move(book));
+        shared_ci.push_back(ci);
     }
 
-    for (const SharedBookView& book : shared) {
-        for (const SlotConfig& cfg : slots_) {
-            ComponentSend& send = slot_send_.at(cfg.slot_id).components[book.component_id];
-            send.last_bids = book.bids;
-            send.last_asks = book.asks;
+    for (std::size_t i = 0; i < shared.size(); ++i) {
+        for (SlotState& state : slot_state_) {
+            ComponentSend& send = state.send[shared_ci[i]];
+            send.last_bids = shared[i].bids;
+            send.last_asks = shared[i].asks;
             send.has_sent = true;
         }
     }
@@ -418,15 +434,15 @@ const TickView& Population::MakeTick() {
         const SlotConfig& cfg = slots_[si];
         SlotTickView& slot_tick = tick_scratch_.slots[si];
         slot_tick.slot_id = cfg.slot_id;
-        // Swap keeps a capacitous trades buffer in pending_trades_ for MatchDue.
-        slot_tick.trades.swap(pending_trades_[cfg.slot_id]);
-        pending_trades_[cfg.slot_id].clear();
+        // Swap keeps a capacitous trades buffer in the slot for MatchDue.
+        SlotState& state = slot_state_[si];
+        slot_tick.trades.swap(state.pending);
+        state.pending.clear();
         if (shared) {
             slot_tick.n_books = 0;
             continue;
         }
 
-        SlotSendState& sent = slot_send_.at(cfg.slot_id);
         std::size_t book_n = 0;
         auto take_patch = [&]() -> SlotBookUpdateView& {
             if (book_n >= slot_tick.books.size()) {
@@ -437,12 +453,12 @@ const TickView& Population::MakeTick() {
             }
             return slot_tick.books[book_n++];
         };
-        for (const Component& component : components_) {
+        for (std::size_t ci = 0; ci < components_.size(); ++ci) {
+            const Component& component = components_[ci];
             if (!component.present()) {
                 continue;
             }
-            const ImpactState& impact =
-                slot_impact_.at(SlotComponentKey{cfg.slot_id, component.component_id()});
+            const ImpactState& impact = state.impact[ci];
             const std::vector<Level>* view_bids = nullptr;
             const std::vector<Level>* view_asks = nullptr;
             if (!impact.enabled()) {
@@ -453,13 +469,13 @@ const TickView& Population::MakeTick() {
                 view_bids = &file_view->bids;
                 view_asks = &file_view->asks;
             } else {
-                if (!EffectiveViewInto(cfg, component, view_scratch_)) {
+                if (!EffectiveViewInto(cfg, component, impact, view_scratch_)) {
                     continue;
                 }
                 view_bids = &view_scratch_.bids;
                 view_asks = &view_scratch_.asks;
             }
-            ComponentSend& send = sent.components[component.component_id()];
+            ComponentSend& send = state.send[ci];
 
             if (!send.has_sent) {
                 SlotBookUpdateView& patch = take_patch();
@@ -608,7 +624,7 @@ OrderResult Population::SubmitOne(const NewOrder& order) {
     working.tif = order.tif;
     working.effective_ts_ns = clock_.pop_ts_ns() + cfg->delta_ns;
 
-    return slot_orders_.at(order.slot_id).Accept(std::move(working));
+    return FindSlotState(order.slot_id)->orders.Accept(std::move(working));
 }
 
 OrderResult Population::CancelOne(const CancelOrder& cancel) {
@@ -619,8 +635,8 @@ OrderResult Population::CancelOne(const CancelOrder& cancel) {
         return OrderResult::UnknownSlot;
     }
     const SlotConfig* cfg = FindSlot(cancel.slot_id);
-    return slot_orders_.at(cancel.slot_id)
-        .ScheduleCancel(cancel.client_order_id, clock_.pop_ts_ns() + cfg->delta_ns);
+    return FindSlotState(cancel.slot_id)
+        ->orders.ScheduleCancel(cancel.client_order_id, clock_.pop_ts_ns() + cfg->delta_ns);
 }
 
 OrderResult Population::ValidateCancel(const CancelOrder& cancel) const {
@@ -633,7 +649,7 @@ OrderResult Population::ValidateCancel(const CancelOrder& cancel) const {
     if (cancel.client_order_id == 0) {
         return OrderResult::InvalidClientOrderId;
     }
-    if (slot_orders_.at(cancel.slot_id).FindLive(cancel.client_order_id) == nullptr) {
+    if (FindSlotState(cancel.slot_id)->orders.FindLive(cancel.client_order_id) == nullptr) {
         return OrderResult::NoSuchOrder;
     }
     return OrderResult::Ok;
@@ -658,8 +674,8 @@ const OrderBatchResult& Population::Submit(const OrderBatch& batch) {
     bool all_ok = true;
     if (!batch.cancels.empty()) {
         if (++cancel_stamp_ == 0) {
-            for (auto& entry : slot_orders_) {
-                entry.second.ClearCancelStamps();
+            for (SlotState& state : slot_state_) {
+                state.orders.ClearCancelStamps();
             }
             cancel_stamp_ = 1;
         }
@@ -667,8 +683,8 @@ const OrderBatchResult& Population::Submit(const OrderBatch& batch) {
     for (const CancelOrder& cancel : batch.cancels) {
         OrderResult check = ValidateCancel(cancel);
         if (check == OrderResult::Ok) {
-            check = slot_orders_.at(cancel.slot_id)
-                        .NoteCancel(cancel.client_order_id, cancel_stamp_);
+            check = FindSlotState(cancel.slot_id)
+                        ->orders.NoteCancel(cancel.client_order_id, cancel_stamp_);
         }
         if (check != OrderResult::Ok) {
             all_ok = false;
@@ -681,7 +697,8 @@ const OrderBatchResult& Population::Submit(const OrderBatch& batch) {
         OrderResult check = ValidateNewOrder(order);
         if (check == OrderResult::Ok) {
             const std::uint64_t floor = NewOrderFloor(
-                batch, i, order.slot_id, slot_orders_.at(order.slot_id).last_accepted_oid());
+                batch, i, order.slot_id,
+                FindSlotState(order.slot_id)->orders.last_accepted_oid());
             if (order.client_order_id <= floor) {
                 check = OrderResult::DuplicateOrderId;
             }
@@ -701,7 +718,7 @@ const OrderBatchResult& Population::Submit(const OrderBatch& batch) {
     }
     for (const NewOrder& order : batch.orders) {
         (void)SubmitOne(order);
-        slot_orders_.at(order.slot_id).NoteAcceptedOid(order.client_order_id);
+        FindSlotState(order.slot_id)->orders.NoteAcceptedOid(order.client_order_id);
     }
     return result;
 }
