@@ -98,6 +98,13 @@ Population::Population(std::vector<ComponentSpec> components, std::vector<SlotCo
                                  ImpactState{cfg.impact_lambda});
         }
     }
+    std::uint64_t max_lag = 0;
+    for (const SlotConfig& cfg : slots_) {
+        max_lag = std::max(max_lag, cfg.md_lag_ns);
+    }
+    for (Component& component : components_) {
+        component.window_.BindLag(max_lag);
+    }
 }
 
 // Single-component convenience (existing tests / P0 call sites).

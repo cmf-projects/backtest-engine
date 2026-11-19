@@ -53,6 +53,23 @@ TEST(TapeWindow, AtOrBeforeAndTrim) {
     EXPECT_EQ(w.AtOrBefore(200)->bids[0].qty, 8u);
 }
 
+TEST(TapeWindow, LagAndGapKeepTheCoveringSnap) {
+    // Gap 100, lag 250 → ceil(250/100) = 3 snaps inside the lag, plus the cover = 4.
+    TapeWindow w;
+    w.BindLag(250);
+    w.Append(Ev(1, 100, 1));
+    w.Append(Ev(2, 200, 2));
+    w.Append(Ev(3, 300, 3));
+    w.Append(Ev(4, 400, 4));
+    w.Append(Ev(5, 500, 5));
+    // pop = 500, cover = AtOrBefore(250) = ts 200. Keep ts >= 200.
+    w.TrimBefore(200);
+    EXPECT_EQ(w.size(), 4u);
+    EXPECT_EQ(w.AtOrBefore(150), nullptr);
+    EXPECT_EQ(w.AtOrBefore(200)->bids[0].qty, 2u);
+    EXPECT_EQ(w.AtOrBefore(500)->bids[0].qty, 5u);
+}
+
 TEST(FileBook, AppendsHistoryOnAdvance) {
     auto tape = std::make_unique<FakeTape>(std::vector<SnapshotEvent>{
         Ev(1, 100, 10),

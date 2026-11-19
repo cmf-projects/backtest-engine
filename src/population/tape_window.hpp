@@ -3,7 +3,6 @@
 #include "population/types.hpp"
 
 #include <cstdint>
-#include <deque>
 #include <vector>
 
 namespace population {
@@ -13,15 +12,19 @@ namespace population {
 // Does not drive Clock / Tape — FileBook appends here as it advances.
 class TapeWindow {
 public:
+    // Widest md_lag across the population's slots. The ring is sized from this
+    // and the smallest gap between snapshots seen on this component.
+    void BindLag(std::uint64_t max_lag_ns) noexcept;
+
     // Append a newer snapshot (ts must be > head, or window empty).
-    // Reuses pooled SnapshotEvent shells when available (level capacity kept).
+    // Slots are a ring. Level vectors stay reserved across trim and append.
     void Append(const SnapshotEvent& snap);
 
-    // Drop snapshots with ts_ns < floor_ts_ns. Recycles into pool.
+    // Drop snapshots with ts_ns < floor_ts_ns. The slot stays in the ring.
     void TrimBefore(std::uint64_t floor_ts_ns);
 
-    [[nodiscard]] bool empty() const noexcept { return snaps_.empty(); }
-    [[nodiscard]] std::size_t size() const noexcept { return snaps_.size(); }
+    [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
+    [[nodiscard]] std::size_t size() const noexcept { return size_; }
 
     // Oldest / newest event ts. Undefined if empty().
     [[nodiscard]] std::uint64_t floor_ts_ns() const;
@@ -32,8 +35,22 @@ public:
     [[nodiscard]] const SnapshotEvent* AtOrBefore(std::uint64_t at_ts_ns) const;
 
 private:
-    std::deque<SnapshotEvent> snaps_;
-    std::vector<SnapshotEvent> pool_;  // recycled by TrimBefore → Append
+    // Snaps kept while trimmed: the one at or before t - lag, plus every snap
+    // inside the lag. 1 + ceil(lag / min gap). More strategies do not add
+    // slots; only the widest lag does. Grows further if the caller does not trim.
+    [[nodiscard]] std::size_t SteadySlots() const noexcept;
+    void EnsureRoom();
+    void GrowTo(std::size_t next_n);
+
+    [[nodiscard]] SnapshotEvent& At(std::size_t logical) noexcept;
+    [[nodiscard]] const SnapshotEvent& At(std::size_t logical) const noexcept;
+    static void ClearKept(SnapshotEvent& snap);
+
+    std::vector<SnapshotEvent> slots_;
+    std::size_t begin_ = 0;
+    std::size_t size_ = 0;
+    std::uint64_t max_lag_ns_ = 0;
+    std::uint64_t min_gap_ns_ = 0;
 };
 
 }  // namespace population
