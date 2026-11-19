@@ -37,7 +37,6 @@ using transport::ValidateBusOpen;
 TEST(BusFraming, OpenRoundTrip) {
     BusOpen open;
     open.population_id = "pop-wire";
-    open.tape_stride = 2;
     open.step_ns = 1'000'000'000;
     open.components.push_back(BusComponent{
         .component_id = "SPOT",
@@ -64,7 +63,6 @@ TEST(BusFraming, OpenRoundTrip) {
     BusOpen got;
     ASSERT_TRUE(DecodeBusOpen(bytes.data(), bytes.size(), got));
     EXPECT_EQ(got.population_id, open.population_id);
-    EXPECT_EQ(got.tape_stride, 2u);
     EXPECT_EQ(got.step_ns, 1'000'000'000);
     ASSERT_EQ(got.components.size(), 2u);
     EXPECT_EQ(got.components[1].component_id, "FUT");
@@ -490,7 +488,6 @@ TEST(BusFraming, OrderBatchRejectsImpossibleCancelCount) {
 TEST(BusFraming, OpenRejectsImpossibleComponentCount) {
     std::vector<std::uint8_t> payload;
     transport::AppendU32(payload, 0);  // empty population_id
-    transport::AppendU32(payload, 0);  // tape_stride
     transport::AppendI64(payload, -1);  // step_ns
     transport::AppendU32(payload, 0xffffffffu);
     BusOpen got;
@@ -500,7 +497,6 @@ TEST(BusFraming, OpenRejectsImpossibleComponentCount) {
 
 TEST(BusFraming, OpenRejectsMoreThanThreeComponents) {
     std::vector<std::uint8_t> payload;
-    transport::AppendU32(payload, 0);
     transport::AppendU32(payload, 0);
     transport::AppendI64(payload, -1);
     transport::AppendU32(payload, 4);
@@ -512,7 +508,6 @@ TEST(BusFraming, OpenRejectsMoreThanThreeComponents) {
 
 TEST(BusFraming, OpenRejectsImpossibleSlotCount) {
     std::vector<std::uint8_t> payload;
-    transport::AppendU32(payload, 0);
     transport::AppendU32(payload, 0);
     transport::AppendI64(payload, -1);
     transport::AppendU32(payload, 0);  // no components

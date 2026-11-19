@@ -9,8 +9,8 @@ namespace population {
 // Population logical clock (`pop_ts`). Pull-advanced by the Population Service
 // after each Tick/Orders round (docs/POPULATION_TZ.md §5.4).
 //
-// Does not read the dataset: the caller supplies the next event timestamp
-// (after tape_stride folding). Match/Δ/md_lag live elsewhere.
+// Does not read the dataset: the caller supplies the next event timestamp.
+// Match/Δ/md_lag live elsewhere.
 class Clock {
 public:
     [[nodiscard]] bool started() const noexcept { return started_; }

@@ -179,7 +179,6 @@ void AppendSlotTick(std::vector<std::uint8_t>& out, const BusSlotTick& slot) {
 void EncodeBusOpenInto(const BusOpen& msg, std::vector<std::uint8_t>& out) {
     out.clear();
     AppendString(out, msg.population_id);
-    AppendU32(out, msg.tape_stride);
     AppendI64(out, msg.step_ns);
     AppendU32(out, static_cast<std::uint32_t>(msg.components.size()));
     for (const auto& c : msg.components) {
@@ -211,8 +210,8 @@ bool DecodeBusOpen(const std::uint8_t* data, std::size_t size, BusOpen& out) {
     BusOpen tmp;
     std::uint32_t n_comp = 0;
     std::uint32_t n_slots = 0;
-    if (!ReadString(p, end, tmp.population_id) || !ReadU32(p, end, tmp.tape_stride) ||
-        !ReadI64(p, end, tmp.step_ns) || !ReadU32(p, end, n_comp)) {
+    if (!ReadString(p, end, tmp.population_id) || !ReadI64(p, end, tmp.step_ns) ||
+        !ReadU32(p, end, n_comp)) {
         return false;
     }
     if (n_comp > kMaxComponents || !CountFits(p, end, n_comp, kMinComponentBytes)) {
