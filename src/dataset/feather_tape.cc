@@ -19,7 +19,10 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
+#include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -33,11 +36,6 @@ using population::SnapshotEvent;
 constexpr std::string_view kSchemaName = "databento_bbo_1m";
 // Databento UNDEF_PRICE: no resting order on that side during the interval.
 constexpr std::int64_t kUndefPrice = std::numeric_limits<std::int64_t>::max();
-
-struct PartInfo {
-    double price_scale = 0.0;
-    std::unordered_set<std::uint32_t> instrument_ids;  // ids mapped to the symbol
-};
 
 template <class T>
 [[nodiscard]] T Unwrap(arrow::Result<T> result, const fs::path& file) {
@@ -80,39 +78,20 @@ template <class ArrowType>
     }
 }
 
-void CollectParts(const fs::path& dir, std::vector<fs::path>& parts) {
-    const fs::path manifest_path = dir / "manifest.json";
-    if (fs::is_regular_file(manifest_path)) {
-        const auto manifest = ReadJson(manifest_path);
-        try {
-            for (const auto& part : manifest.at("parts")) {
-                parts.push_back(dir / part.at("filename").get<std::string>());
-            }
-        } catch (const nlohmann::json::exception& e) {
-            throw std::runtime_error("bad manifest " + manifest_path.string() + ": " + e.what());
-        }
-        return;
-    }
-    std::vector<fs::path> subdirs;
-    for (const auto& entry : fs::directory_iterator(dir)) {
-        if (entry.is_directory()) {
-            subdirs.push_back(entry.path());
-        }
-    }
-    std::sort(subdirs.begin(), subdirs.end());
-    for (const auto& sub : subdirs) {
-        CollectParts(sub, parts);
-    }
-}
+}  // namespace
 
-[[nodiscard]] PartInfo LoadPartInfo(const fs::path& part, const std::string& symbol) {
-    const fs::path dir = part.parent_path();
+struct CachedDir {
+    double price_scale = 0.0;
+    std::unordered_set<std::uint32_t> instrument_ids;
+    std::vector<std::string> filenames;
+};
+
+[[nodiscard]] CachedDir ParseDir(const fs::path& dir, const std::string& symbol) {
     const fs::path manifest_path = dir / "manifest.json";
     const fs::path metadata_path = dir / "source-metadata.json";
     const auto manifest = ReadJson(manifest_path);
     const auto metadata = ReadJson(metadata_path);
-
-    PartInfo info;
+    CachedDir info;
     try {
         const auto schema = manifest.at("schema_name").get<std::string>();
         if (schema != kSchemaName) {
@@ -126,21 +105,59 @@ void CollectParts(const fs::path& dir, std::vector<fs::path>& parts) {
                 continue;
             }
             for (const auto& interval : mapping.at("intervals")) {
-                // stype_out = instrument_id, written as a decimal string.
-                info.instrument_ids.insert(
-                    static_cast<std::uint32_t>(std::stoul(interval.at("symbol").get<std::string>())));
+                info.instrument_ids.insert(static_cast<std::uint32_t>(
+                    std::stoul(interval.at("symbol").get<std::string>())));
             }
+        }
+        if (!(info.price_scale > 0.0)) {
+            throw std::runtime_error("bad price_scale in " + manifest_path.string());
+        }
+        for (const auto& part : manifest.at("parts")) {
+            info.filenames.push_back(part.at("filename").get<std::string>());
         }
     } catch (const nlohmann::json::exception& e) {
         throw std::runtime_error("bad sidecar in " + dir.string() + ": " + e.what());
     }
-    if (!(info.price_scale > 0.0)) {
-        throw std::runtime_error("bad price_scale in " + manifest_path.string());
-    }
     return info;
 }
 
-}  // namespace
+[[nodiscard]] CachedDir CachedSidecar(const fs::path& dir, const std::string& symbol) {
+    static std::mutex mu;
+    static std::unordered_map<std::string, CachedDir> cache;
+    const std::string key = dir.string() + "\n" + symbol;
+    std::lock_guard lock(mu);
+    const auto it = cache.find(key);
+    if (it != cache.end()) {
+        return it->second;
+    }
+    return cache.emplace(key, ParseDir(dir, symbol)).first->second;
+}
+
+void FeatherBboTape::CollectParts(const fs::path& dir) {
+    const fs::path manifest_path = dir / "manifest.json";
+    if (!fs::is_regular_file(manifest_path)) {
+        std::vector<fs::path> subdirs;
+        for (const auto& entry : fs::directory_iterator(dir)) {
+            if (entry.is_directory()) {
+                subdirs.push_back(entry.path());
+            }
+        }
+        std::sort(subdirs.begin(), subdirs.end());
+        for (const auto& sub : subdirs) {
+            CollectParts(sub);
+        }
+        return;
+    }
+
+    const CachedDir cached = CachedSidecar(dir, symbol_);
+    for (const std::string& filename : cached.filenames) {
+        ListedPart part;
+        part.file = dir / filename;
+        part.price_scale = cached.price_scale;
+        part.instrument_ids = cached.instrument_ids;
+        parts_.push_back(std::move(part));
+    }
+}
 
 namespace {
 
@@ -383,9 +400,10 @@ FeatherBboTape::FeatherBboTape(std::string path, std::string symbol)
     }
     const fs::path root(path_);
     if (fs::is_directory(root)) {
-        CollectParts(root, parts_);
+        CollectParts(root);
     } else if (fs::is_regular_file(root)) {
-        parts_.push_back(root);
+        CollectParts(root.parent_path());
+        std::erase_if(parts_, [&](const ListedPart& part) { return part.file != root; });
     } else {
         throw std::runtime_error("cannot open dataset: " + path_);
     }
@@ -429,8 +447,8 @@ bool FeatherBboTape::LoadNextPart() {
     rows_.clear();
     row_ = 0;
     while (next_part_ < parts_.size()) {
-        const fs::path& file = parts_[next_part_++];
-        const PartInfo info = LoadPartInfo(file, symbol_);
+        const ListedPart info = std::move(parts_[next_part_++]);
+        const fs::path& file = info.file;
         if (info.instrument_ids.empty()) {
             continue;
         }
