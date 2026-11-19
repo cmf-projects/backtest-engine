@@ -117,7 +117,6 @@ bool RunPopulationLoop(PopHandle& pop, const Config& cfg, EndedHub& hub) {
     std::uint64_t next_oid = 1;
     std::unordered_set<std::string> seen_books;
     DensePending pending;
-    pending.Reserve(32'768);
     BusTick tick;
     BusOrderBatch batch;
     batch.orders.reserve(8);

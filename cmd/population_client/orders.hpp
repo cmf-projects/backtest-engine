@@ -15,37 +15,67 @@ struct PendingOrder {
     transport::BusPrice price;
 };
 
-// Monotonic client_order_id → slot; no per-insert heap nodes.
+// Live orders only. A finished id is cleared and the slot is reused.
+// The table does not grow with client_order_id: the next order always gets a
+// higher id, so indexing by oid would keep every dead IOC until the run ends.
 struct DensePending {
     struct Slot {
         bool live = false;
+        std::uint64_t oid = 0;
         PendingOrder order;
     };
 
-    std::vector<Slot> slots;  // index == oid (0 unused)
+    DensePending() { slots.reserve(8); }
 
-    void Reserve(std::size_t n) { slots.reserve(n); }
+    [[nodiscard]] std::size_t slot_count() const noexcept { return slots.size(); }
+    [[nodiscard]] std::size_t live_count() const noexcept { return live_; }
 
     void Put(std::uint64_t oid, PendingOrder order) {
-        if (oid >= slots.size()) {
-            slots.resize(oid + 1);
+        if (Slot* existing = FindSlot(oid)) {
+            existing->order = std::move(order);
+            return;
         }
-        slots[oid].order = std::move(order);
-        slots[oid].live = true;
+        for (Slot& slot : slots) {
+            if (!slot.live) {
+                slot.live = true;
+                slot.oid = oid;
+                slot.order = std::move(order);
+                ++live_;
+                return;
+            }
+        }
+        slots.push_back(Slot{.live = true, .oid = oid, .order = std::move(order)});
+        ++live_;
     }
 
     [[nodiscard]] PendingOrder* Find(std::uint64_t oid) {
-        if (oid >= slots.size() || !slots[oid].live) {
-            return nullptr;
-        }
-        return &slots[oid].order;
+        Slot* slot = FindSlot(oid);
+        return slot == nullptr ? nullptr : &slot->order;
     }
 
     void Erase(std::uint64_t oid) {
-        if (oid < slots.size()) {
-            slots[oid].live = false;
+        Slot* slot = FindSlot(oid);
+        if (slot == nullptr) {
+            return;
         }
+        slot->live = false;
+        slot->oid = 0;
+        slot->order = PendingOrder{};
+        --live_;
     }
+
+private:
+    [[nodiscard]] Slot* FindSlot(std::uint64_t oid) {
+        for (Slot& slot : slots) {
+            if (slot.live && slot.oid == oid) {
+                return &slot;
+            }
+        }
+        return nullptr;
+    }
+
+    std::vector<Slot> slots;
+    std::size_t live_ = 0;
 };
 
 struct RunStats {
