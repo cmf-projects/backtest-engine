@@ -18,11 +18,28 @@ namespace {
     return memory.back();
 }
 
+[[nodiscard]] bool PriceLess(const transport::BusPrice& a, const transport::BusPrice& b) noexcept {
+    return a.whole < b.whole || (a.whole == b.whole && a.frac < b.frac);
+}
+
+// Keyframe books are best-first: the first live level is the touch.
+// A diff may list a deep level after the touch. A worse price does not replace it.
 void ApplySide(bool& has, transport::BusPrice& price, std::uint64_t& qty,
-               const std::vector<transport::BusBookLevel>& levels, bool replace) {
+               const std::vector<transport::BusBookLevel>& levels, bool replace,
+               bool higher_is_better) {
     if (replace) {
         has = false;
         qty = 0;
+        for (const transport::BusBookLevel& level : levels) {
+            if (level.qty == 0) {
+                continue;
+            }
+            has = true;
+            price = level.price;
+            qty = level.qty;
+            return;
+        }
+        return;
     }
     for (const transport::BusBookLevel& level : levels) {
         if (level.qty == 0) {
@@ -32,9 +49,18 @@ void ApplySide(bool& has, transport::BusPrice& price, std::uint64_t& qty,
             }
             continue;
         }
-        has = true;
-        price = level.price;
-        qty = level.qty;
+        if (!has || price == level.price) {
+            has = true;
+            price = level.price;
+            qty = level.qty;
+            continue;
+        }
+        const bool better =
+            higher_is_better ? PriceLess(price, level.price) : PriceLess(level.price, price);
+        if (better) {
+            price = level.price;
+            qty = level.qty;
+        }
     }
 }
 
@@ -44,8 +70,8 @@ void Remember(std::vector<RememberedBook>& memory, const transport::BusBookUpdat
     }
     RememberedBook& book = FindBook(memory, update.component_id);
     const bool replace = update.kind != transport::BusBookPatchKind::Diff;
-    ApplySide(book.has_bid, book.bid, book.bid_qty, update.bids, replace);
-    ApplySide(book.has_ask, book.ask, book.ask_qty, update.asks, replace);
+    ApplySide(book.has_bid, book.bid, book.bid_qty, update.bids, replace, true);
+    ApplySide(book.has_ask, book.ask, book.ask_qty, update.asks, replace, false);
 }
 
 void RememberTick(const transport::BusTick& tick, std::vector<RememberedBook>& memory) {

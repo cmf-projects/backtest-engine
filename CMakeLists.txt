@@ -245,6 +245,17 @@ if(CMF_BUILD_TESTS)
     cmf::population_venue
     GTest::gtest_main)
   gtest_discover_tests(venue_tests)
+
+  add_executable(client_tests
+    tests/client/dense_pending_test.cc
+    tests/client/remember_book_test.cc
+    cmd/population_client/orders.cc)
+  target_include_directories(client_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmd/population_client")
+  target_link_libraries(client_tests PRIVATE
+    cmf::population_venue
+    GTest::gtest_main)
+  gtest_discover_tests(client_tests)
 endif()
 
 if(MSVC)
@@ -259,6 +270,7 @@ if(MSVC)
     target_compile_options(population_tests PRIVATE /W4)
     target_compile_options(transport_tests PRIVATE /W4)
     target_compile_options(dataset_tests PRIVATE /W4)
+    target_compile_options(client_tests PRIVATE /W4)
   endif()
 else()
   target_compile_options(dataset_lib PRIVATE -Wall -Wextra -Wpedantic)
@@ -272,5 +284,6 @@ else()
     target_compile_options(population_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(transport_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(dataset_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(client_tests PRIVATE -Wall -Wextra -Wpedantic)
   endif()
 endif()

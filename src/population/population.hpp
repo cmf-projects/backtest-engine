@@ -12,11 +12,10 @@
 #include "population/tick.hpp"
 #include "population/types.hpp"
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
-#include <unordered_map>
-#include <utility>
 #include <vector>
 
 namespace population {
@@ -24,6 +23,9 @@ namespace population {
 // A hole longer than this is a closed session (night, weekend), not a quiet
 // stretch of the bar grid. One Advance lands on the next quote. One hour.
 inline constexpr std::uint64_t kSessionGapNs = 3'600'000'000'000ULL;
+
+// Open carries at most three books: spot, futures, option.
+inline constexpr std::size_t kMaxComponents = 3;
 
 // One Open.components[] row + its tape (IMPL 3.2).
 struct ComponentSpec {
@@ -46,6 +48,7 @@ private:
     friend class Population;
 
     std::string component_id_;
+    std::size_t index_ = 0;
     double tick_size_ = 0.0;
     std::optional<SnapshotEvent> current_;
     TapeWindow window_;
@@ -110,21 +113,17 @@ private:
         std::vector<Level> last_asks;
     };
 
-    struct SlotSendState {
-        // component_id → last sent book for that component
-        std::unordered_map<std::string, ComponentSend> components;
+    // Parallel to slots_. Books and impact are arrays over components_[0..2].
+    struct SlotState {
+        std::array<ComponentSend, kMaxComponents> send{};
+        std::array<ImpactState, kMaxComponents> impact{ImpactState{0.0}, ImpactState{0.0},
+                                                       ImpactState{0.0}};
+        SlotOrders orders;
+        std::vector<Trade> pending;
     };
 
-    // (slot_id, component_id) → ImpactState
-    using SlotComponentKey = std::pair<std::uint32_t, std::string>;
-
-    struct SlotComponentKeyHash {
-        [[nodiscard]] std::size_t operator()(const SlotComponentKey& key) const noexcept {
-            std::size_t h = std::hash<std::uint32_t>{}(key.first);
-            h ^= std::hash<std::string>{}(key.second) + 0x9e3779b9u + (h << 6) + (h >> 2);
-            return h;
-        }
-    };
+    [[nodiscard]] const SlotState* FindSlotState(std::uint32_t slot_id) const;
+    [[nodiscard]] SlotState* FindSlotState(std::uint32_t slot_id);
 
     [[nodiscard]] bool HasSlot(std::uint32_t slot_id) const;
     [[nodiscard]] bool HasComponent(const std::string& component_id) const;
@@ -136,7 +135,7 @@ private:
     // False when ViewSnap is empty. Otherwise writes the lagged file book minus
     // this slot's current eaten.
     [[nodiscard]] bool EffectiveViewInto(const SlotConfig& cfg, const Component& component,
-                                         SnapshotEvent& out) const;
+                                         const ImpactState& impact, SnapshotEvent& out) const;
     void ApplyMergedStep(const MergedStep& step);
     void TrimWindowForLags();
     void MatchDueIfNeeded();
@@ -156,10 +155,7 @@ private:
     std::optional<MergedTape> merge_;
     bool started_ = false;
     bool ended_ = false;
-    std::unordered_map<std::uint32_t, SlotSendState> slot_send_;
-    std::unordered_map<std::uint32_t, SlotOrders> slot_orders_;
-    std::unordered_map<SlotComponentKey, ImpactState, SlotComponentKeyHash> slot_impact_;
-    std::unordered_map<std::uint32_t, std::vector<Trade>> pending_trades_;
+    std::vector<SlotState> slot_state_;
     std::uint64_t last_match_pop_ts_ns_ = 0;
     bool matched_this_pop_ = false;
 

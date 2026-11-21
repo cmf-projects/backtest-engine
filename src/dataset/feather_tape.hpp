@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -47,6 +48,13 @@ private:
         std::uint32_t ask_sz = 0;
     };
 
+    struct ListedPart {
+        std::filesystem::path file;
+        double price_scale = 0.0;
+        std::unordered_set<std::uint32_t> instrument_ids;
+    };
+
+    void CollectParts(const std::filesystem::path& dir);
     [[nodiscard]] bool LoadNextPart();
     [[nodiscard]] bool ReadOneInto(population::SnapshotEvent& out);
 
@@ -55,7 +63,7 @@ private:
     // One decompress buffer for every part. Starts at 2× the first day and
     // grows by 2× the shortage when a later day does not fit.
     std::unique_ptr<DaySlabPool> slab_;
-    std::vector<std::filesystem::path> parts_;
+    std::vector<ListedPart> parts_;
     std::size_t next_part_ = 0;
     std::vector<Row> rows_;  // current part, `symbol_` only
     std::size_t row_ = 0;

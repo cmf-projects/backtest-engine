@@ -26,3 +26,4 @@ data/
 testdata/population/noise/
 .tools/
 heaptrack*
+profiles/
