@@ -65,7 +65,8 @@ effective_ts_i = t_seen + Δ_i     # когда новый ордер matchable
 | **`Δ`** | per-slot | Задержка ордерного канала до матчера |
 | **Модель B** | частный случай D | `md_lag = 0`, `Δ` как задано (ближе к CMF/live view) |
 
-Нет look-ahead: стратегия не видит ts > `t - md_lag`.
+Нет look-ahead: стратегия не видит ts > `t - md_lag`. Пока `t < md_lag` или
+`t - md_lag` раньше первого снапшота, слот не получает книгу.
 
 **Снято с канона (относительно старого черновика плана):** разный `virtual_ts` у
 слотов, `HorizonOffset`, leader `argmax(offset)`, catch-up догон внутри
@@ -99,8 +100,9 @@ effective_qty[c] = max(0, file_qty[c] - eaten_slot[c])
 ```
 
 **Impact:** per-slot × component `eaten` + экспоненциальное восстановление при
-живом уровне в файле этой ноги; уровень исчез → сброс eaten. **`λ` — per-slot**
-(дефолт с популяции): `λ = 0` выключает impact; `λ > 0` включает recovery.
+живом уровне в файле этой ноги; уровень исчез → сброс eaten. **`λ` — per-slot
+и обязан быть больше нуля.** Open с `λ = 0` — ошибка: иначе один и тот же объём
+файла исполняется на каждом шаге.
 
 ---
 
@@ -318,8 +320,8 @@ Working и ImpactState в venue. На wire:
 ### 5.4 Цикл одного тика (логический) — канон
 
 `Δ = 0` **запрещён** (ошибка конфига / Open / слота). Минимальный легальный
-`Δ` пока **1** (логическая единица времени). Шаг ленты задаёт не `step_ns`,
-а события датасета и **`tape_stride`** (сколько событий на один Advance).
+`Δ` пока **1** (логическая единица времени). При `step_ns = -1` один Advance —
+следующее событие датасета.
 
 На одном `t` venue проходит **все** слоты одинаково (нет гонки «кто быстрее»
 между стратегиями):
@@ -334,12 +336,20 @@ Working и ImpactState в venue. На wire:
 6. Advance: pop_ts → следующий event; SnapshotFloor; venue сам шлёт Tick|End
 ```
 
+При `step_ns > 0` часы идут сеткой шага. Дыра до следующей котировки длиннее
+часа (`kSessionGapNs`) сворачивается в один Advance на её `ts`: ночь и выходные
+не нарезаются шагом. Импакт затухает на полный `dt` прыжка. Ордер, чьё время
+исполнения или снятия попало в дыру, на открытии уже due.
+
 **Изоляция:** слоты не видят чужие филлы/ордера и не конкурируют за
 ликвидность; матч A не меняет effective B. «Кто быстрее отправил» между
 стратегиями не считается — только порядок заявок **внутри** одного слота.
 
 Новый ордер на `t` всегда с `effective_ts > t`. Филлы — в `trades` того Tick,
-на чьём `t` сработал due-матч.
+на чьём `t` сработал due-матч. Cancel на `t` получает тот же `Δ`: пока
+`pop_ts < t + Δ`, ордер ещё матчится. На тике с `pop_ts == t + Δ` сначала
+матч, затем снятие остатка. Если часы перешагнули `t + Δ`, филла на этом
+тике уже нет. Снятие остатка приходит как `Trade{Cancel}`.
 
 ---
 
@@ -361,7 +371,7 @@ Open / нет в Tick. В `Tick` — effective books **всех присутст
 
 | Фаза | Содержание | Готово, когда |
 | --- | --- | --- |
-| **P0** | Одна популяция; K слотов; impact `λ = 0`; UDS + 2×SPSC; **пока 1 JSONL** ок как подмножество bundle | Детерминированный повтор; pull не обгоняет Engine |
+| **P0** | Одна популяция; K слотов; impact `λ > 0`; UDS + 2×SPSC; **пока 1 JSONL** ок как подмножество bundle | Детерминированный повтор; pull не обгоняет Engine |
 | **P1** | Impact + per-slot `λ`; Match по effective; Working per-slot; trades в Tick; CMF 1-slot зелёный | Филл только у своего слота; recovery; `make run` CMF OK |
 | **P1b** | **Обязательный** ComponentBundle: spot + futures + option (или меньше, если нет ноги); merge по `ts_ns` | Один `pop_ts`; в Tick books всех присутствующих ног |
 | **Index** | Sidecar `ts → file_offset` / keyframes (старт всё равно с начала файла) | Быстрее читать длинный JSONL |
@@ -478,8 +488,8 @@ eaten-timeline — отложено.
 
 ### 8.9 Ускорение (не P0)
 
-- `tape_stride` в Open уже есть: P0 держать `1`; `N > 1` — склейка N событий
-  файла в один Tick (обычно last book), один round-trip на склейку.
+- Поле `tape_stride` убрано из Open. Склейки нескольких событий файла в один
+  Advance нет. Шаг часов — `step_ns`.
 - Бинарный датасет вместо JSONL на горячем пути.
 
 ### 8.10 Транспортный каркас — **закрыто (семантика)**
@@ -518,7 +528,6 @@ Done when: в `MakeTick`, если `diff.bids.size() > 64` или `diff.asks.siz
 | Кто двигает время | Trading Engine (pull Advance) |
 | Шаг | Каждый тик, со стримом динамики |
 | Транспорт | UDS create + SessionEnded; тики по 2×SPSC; SM stall / нет Close → drain_timeout 60s → SessionEnded{fatal} по UDS; recoverable OrdersAck — позже |
-| `tape_stride` | Склейка N событий файла в один Tick; P0 = 1; не путать с price `tick_size` |
 | Старт ленты | Всегда первое событие файла; mid-file seek нет |
 | View на wire | books/overlays keyed by `component_id` + trades |
 | Bundle | До 3 ног: spot + futures + option (или меньше); `component_id` уникален; нет ноги → нет в Tick; код сейчас ещё 1 книга |
@@ -532,7 +541,7 @@ Done when: в `MakeTick`, если `diff.bids.size() > 64` или `diff.asks.siz
 | Side | BUY / SELL; `UNSPECIFIED` → `Error` |
 | Phase 1 host | Trading Engine dial’ит venue по UDS (не embed-only) |
 | CMF | 1-slot smoke |
-| Impact config | Per-slot `λ`; `λ = 0` = off |
+| Impact config | Per-slot `λ > 0`; `λ = 0` — ошибка Open |
 | Немой multi-tick Advance | Нет |
 | `Δ = 0` | Запрещён (ошибка) |
 | Порядок тика | §5.4: file → recovery → match due → Tick → Order → Advance(PS) |

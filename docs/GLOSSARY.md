@@ -15,7 +15,7 @@ Terms for the multi-strategy population venue path (UDS + SPSC).
 | **SnapshotFloor** | Oldest timestamp kept materialized/reconstructible in `TapeWindow`: `pop_ts - max_i(md_lag_i)` (enough history for the stalest view). As `pop_ts` moves, the floor advances and prefix deltas are dropped. |
 | **TapeWindow** | Shared in-memory chain: snapshot at `SnapshotFloor` plus **BookDelta**s up through `pop_ts` (and prefetch). One window for the whole population — not per slot. |
 | **BookDelta** | Incremental patch for one tape step (e.g. 100→101). Rebuild file book at a tick by applying deltas from the floor snapshot. Do **not** call this an “offset”. |
-| **tape_stride** | Open knobs: how many consecutive dataset events fold into one Tick/Advance. `0`/`1` = every event (P0). `N > 1` = coalesce for speed; `pop_ts` becomes the last folded event’s `ts`. Not price `tick_size`. |
+| **kSessionGapNs** | Fixed clock constant, one hour. With `step_ns > 0`, a hole to the next dataset timestamp longer than this is one Advance onto that timestamp (night, weekend). Shorter holes stay on the step grid. Impact decays by the full jump. An order whose effective or cancel time falls inside the hole is already due on landing. |
 | **ReadWatermark** | How far the dataset has been parsed into `TapeWindow` (may prefetch slightly ahead of `pop_ts`). |
 | **md_lag** | Per-slot view staleness: at `pop_ts = t`, strategy sees file/effective book at `t - md_lag`. |
 | **Δ (order delay)** | Per-slot order delay: decision at `t_seen` → matchable at `t_seen + Δ`. Same role as CMF lookahead. **`Δ = 0` is illegal** (reject); minimum legal `Δ` is 1 (logical time unit) until raised to tape step. |
@@ -31,7 +31,7 @@ Terms for the multi-strategy population venue path (UDS + SPSC).
 | **Trades (exec field)** | Separate field on each tick: fills/trades for that slot this step. Strategy uses this for margin/turnover/PnL — not inferred from book diff. |
 | **client_order_id** | Client-assigned order key for the population UDS/SPSC path. Lifetime id of the order: Order, fills, Cancel, and rejects all use the same id. Book key is `(slot_id, client_order_id)`. No separate venue `order_id` on this path (unlike CMF `ord_id`). **Contract:** within one population, ids are assigned by the Engine as **dense consecutive `uint64` starting at 1 and strictly increasing** (no gaps, no reuse while live; after terminal — only a new higher id). Enables dense per-pop indexing later. |
 
-**Removed from the population path:** per-slot `virtual_ts` desync, `HorizonOffset` catch-up, `argmax(offset)` leader. Timing differences between strategies are **`md_lag` and `Δ` only**; trading differences are orders + impact.
+**Removed from the population path:** per-slot `virtual_ts` desync, `HorizonOffset` catch-up, `argmax(offset)` leader, Open field `tape_stride` (no folding of dataset events; the clock step is `step_ns`). Timing differences between strategies are **`md_lag` and `Δ` only**; trading differences are orders + impact.
 
 ## Visibility and delays (model D)
 
@@ -103,6 +103,6 @@ If a level disappears from the file book: drop eaten for that key.
 A fill on a slot increases only that slot's eaten at the fill price.
 ```
 
-`λ` (`impact_lambda`) defaults at population level but **may be overridden per slot**
-(`λ = 0` disables impact) to A/B how much results depend on recovery.
+`λ` (`impact_lambda`) is per slot. Open rejects a missing or non-positive value:
+without recovery the same file size is filled again on every step.
 Units: per nanosecond (or per tape step once stride exists).
