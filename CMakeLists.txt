@@ -132,13 +132,11 @@ FetchContent_Declare(cmf_wire
 FetchContent_MakeAvailable(cmf_wire)
 
 # ---------------------------------------------------------------------------
-# Transport — src/transport/ (UDS control + SPSC ring header)
+# Transport — src/transport/ (UDS control, session). The SPSC ring lives in cmf_wire.
 # ---------------------------------------------------------------------------
 add_library(transport_lib
-  src/transport/shm_queue.cc
   src/transport/uds_control.cc
   src/transport/bus_population_map.cc
-  src/transport/spsc_bus.cc
   src/transport/population_session.cc)
 add_library(cmf::transport ALIAS transport_lib)
 

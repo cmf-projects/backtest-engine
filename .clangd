@@ -1,0 +1,4 @@
+# Discovered from the source file upward, so a multi-root window still uses
+# this project's compilation database instead of the first workspace folder.
+CompileFlags:
+  CompilationDatabase: build
