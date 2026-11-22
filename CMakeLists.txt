@@ -117,13 +117,26 @@ target_compile_features(population_lib PUBLIC cxx_std_20)
 # dataset_lib adapts into population::Tape (headers only); link both at the app.
 
 # ---------------------------------------------------------------------------
+# Wire — protocol frames from cmf-projects/wire-engine. Branch dev for now.
+# Parent links the real target cmf_wire: the alias cmf::wire is created
+# inside that project and is not visible here.
+# ---------------------------------------------------------------------------
+set(CMF_WIRE_GIT "git@github.com:cmf-projects/wire-engine.git"
+    CACHE STRING "Git URL of the protocol frames")
+set(CMF_WIRE_TAG "dev" CACHE STRING "Git branch, tag, or commit of wire-engine")
+
+FetchContent_Declare(cmf_wire
+  GIT_REPOSITORY ${CMF_WIRE_GIT}
+  GIT_TAG        ${CMF_WIRE_TAG}
+  GIT_SHALLOW    TRUE)
+FetchContent_MakeAvailable(cmf_wire)
+
+# ---------------------------------------------------------------------------
 # Transport — src/transport/ (UDS control + SPSC ring header)
 # ---------------------------------------------------------------------------
 add_library(transport_lib
   src/transport/shm_queue.cc
-  src/transport/uds_framing.cc
   src/transport/uds_control.cc
-  src/transport/bus_framing.cc
   src/transport/bus_population_map.cc
   src/transport/spsc_bus.cc
   src/transport/population_session.cc)
@@ -133,7 +146,7 @@ target_include_directories(transport_lib
   PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>")
 target_compile_features(transport_lib PUBLIC cxx_std_20)
-target_link_libraries(transport_lib PUBLIC cmf::population cmf::dataset spdlog::spdlog Threads::Threads)
+target_link_libraries(transport_lib PUBLIC cmf_wire cmf::population cmf::dataset spdlog::spdlog Threads::Threads)
 target_compile_definitions(transport_lib
   PUBLIC
     SPDLOG_ACTIVE_LEVEL=${CMF_SPDLOG_ACTIVE_LEVEL})

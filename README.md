@@ -139,6 +139,7 @@ apps/population_smoke/   in-process population smoke
 options/                 TOML configs per entrypoint
 src/population_venue/    config parse + App::Run
 src/population/          population core
+../wire-engine/          protocol frames (cmf_wire)
 src/transport/           UDS + SPSC bus + session
 src/dataset/             JSONL / Feather (bbo-1m) → Tape
 testdata/population/     sample JSONL for smoke

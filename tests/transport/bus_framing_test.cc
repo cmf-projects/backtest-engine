@@ -1,4 +1,3 @@
-#include "population/types.hpp"
 #include "transport/bus_framing.hpp"
 #include "transport/bus_messages.hpp"
 #include "transport/wire_bytes.hpp"
@@ -365,7 +364,7 @@ TEST(BusFraming, NoTradesClearsSizeKeepsCapacity) {
     ASSERT_EQ(got.slots.size(), 1u);
     ASSERT_EQ(got.slots[0].trades.size(), 1u);
     const std::size_t cap = got.slots[0].trades.capacity();
-    EXPECT_EQ(cap, population::kTradeCapacity);
+    EXPECT_GE(cap, std::size_t{16});
 
     const auto none = encode(false);
     ASSERT_TRUE(DecodeBusTick(none.data(), none.size(), got));

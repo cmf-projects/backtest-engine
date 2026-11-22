@@ -30,7 +30,7 @@ Engine ──SPSC in──► Venue      Open, OrderBatch, Advance, Close
 
 - One UDS connection → many populations (each Create → thread + own SPSC pair).
 - Hot path is SPSC; UDS is control + lifecycle only.
-- Wire = binary framing in `src/transport/` (no protobuf/gRPC).
+- Wire = binary framing in the sibling project `wire-engine` (`cmf_wire`, no protobuf/gRPC).
 
 Pull model: venue advances `pop_ts` only on Engine **Advance**.
 
@@ -44,7 +44,8 @@ apps/population_smoke/      same-process UDS + shm attach Open→Tick→Advance�
 apps/population_client/     external Engine: take best bid/ask over shm SPSC
 options/                    TOML per entrypoint (e.g. population_venue.toml)
 src/population_venue/       config/ + app/ + shutdown/ + log/ (spdlog plain|json)
-src/transport/              UDS, shm SPSC (QueueRegistry), bus, PopulationSession
+../wire-engine/             protocol frames (cmf_wire); no book, no Arrow
+src/transport/              UDS, shm SPSC (QueueRegistry), session; links cmf_wire
 src/population/             core (1…3 components via MergedTape)
 src/dataset/                JSONL / Feather (Databento bbo-1m, Arrow C++) → Tape; MakeTape picks by path
 testdata/population/        smoke JSONL
