@@ -177,6 +177,13 @@ void PrepareTickStorage(BusTick& out, std::size_t n_slots, std::size_t n_compone
 void ToBusTickInto(const population::TickView& in, BusTick& out,
                    const TickSizeByComponent& tick_sizes) {
     out.pop_ts_ns = in.pop_ts_ns;
+    if (out.books.size() < in.books.size()) {
+        const std::size_t born = out.books.size();
+        out.books.resize(in.books.size());
+        for (std::size_t i = born; i < out.books.size(); ++i) {
+            ReserveBookSides(out.books[i]);
+        }
+    }
     out.n_books = static_cast<std::uint32_t>(in.books.size());
     for (std::uint32_t i = 0; i < out.n_books; ++i) {
         const auto& book = in.books[i];
@@ -191,6 +198,13 @@ void ToBusTickInto(const population::TickView& in, BusTick& out,
         const auto& slot = in.slots[si];
         BusSlotTick& st = out.slots[si];
         st.slot_id = slot.slot_id;
+        if (st.books.size() < slot.books.size()) {
+            const std::size_t born = st.books.size();
+            st.books.resize(slot.books.size());
+            for (std::size_t i = born; i < st.books.size(); ++i) {
+                ReserveBookSides(st.books[i]);
+            }
+        }
         st.n_books = slot.n_books;
         for (std::uint32_t bi = 0; bi < st.n_books; ++bi) {
             const auto& book = slot.books[bi];

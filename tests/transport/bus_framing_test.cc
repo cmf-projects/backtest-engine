@@ -67,12 +67,34 @@ TEST(BusFraming, OpenRoundTrip) {
     EXPECT_EQ(got.components[1].component_id, "FUT");
     EXPECT_EQ(got.components[1].role, BusAssetRole::Future);
     EXPECT_EQ(got.components[1].tick_size, "1");
+    std::string why;
+
+    open.components.push_back(BusComponent{
+        .component_id = "OPT-A",
+        .role = BusAssetRole::Option,
+        .dataset_path = "/data/opt.jsonl",
+        .class_code = "EUCO",
+        .sec_code = "C100",
+        .tick_size = "0.0001",
+    });
+    open.components.push_back(BusComponent{
+        .component_id = "OPT-B",
+        .role = BusAssetRole::Option,
+        .dataset_path = "/data/opt.jsonl",
+        .class_code = "EUCO",
+        .sec_code = "C110",
+        .tick_size = "0.0001",
+    });
+    const auto wider = EncodeBusOpen(open);
+    BusOpen chain;
+    ASSERT_TRUE(DecodeBusOpen(wider.data(), wider.size(), chain));
+    ASSERT_EQ(chain.components.size(), 4u);
+    EXPECT_EQ(chain.components[3].sec_code, "C110");
+    EXPECT_TRUE(ValidateBusOpen(chain, why));
     ASSERT_EQ(got.slots.size(), 2u);
     EXPECT_EQ(got.slots[0].delta_ns, 4u);
     EXPECT_EQ(got.slots[0].impact_lambda, "0.001");
     EXPECT_EQ(got.slots[1].slot_id, 2u);
-
-    std::string why;
     EXPECT_TRUE(ValidateBusOpen(got, why));
 }
 
@@ -494,13 +516,13 @@ TEST(BusFraming, OpenRejectsImpossibleComponentCount) {
     EXPECT_TRUE(got.components.empty());
 }
 
-TEST(BusFraming, OpenRejectsMoreThanThreeComponents) {
+TEST(BusFraming, OpenRejectsMoreComponentsThanAChain) {
     std::vector<std::uint8_t> payload;
     transport::AppendU32(payload, 0);
     transport::AppendI64(payload, -1);
-    transport::AppendU32(payload, 4);
-    payload.resize(payload.size() + 4 * 21, 0);  // four minimum components
-    transport::AppendU32(payload, 0);            // n_slots
+    transport::AppendU32(payload, 1025);
+    payload.resize(payload.size() + 1025 * 21, 0);
+    transport::AppendU32(payload, 0);
     BusOpen got;
     EXPECT_FALSE(DecodeBusOpen(payload.data(), payload.size(), got));
 }

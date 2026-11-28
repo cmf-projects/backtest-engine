@@ -5,7 +5,7 @@ project(cmf
   DESCRIPTION "Population venue (UDS + SPSC) and core"
   LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -94,7 +94,7 @@ add_library(cmf::dataset ALIAS dataset_lib)
 target_include_directories(dataset_lib
   PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>")
-target_compile_features(dataset_lib PUBLIC cxx_std_20)
+target_compile_features(dataset_lib PUBLIC cxx_std_23)
 target_link_libraries(dataset_lib PRIVATE Arrow::arrow_shared nlohmann_json::nlohmann_json)
 
 add_library(population_lib
@@ -113,7 +113,7 @@ add_library(cmf::population ALIAS population_lib)
 target_include_directories(population_lib
   PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>")
-target_compile_features(population_lib PUBLIC cxx_std_20)
+target_compile_features(population_lib PUBLIC cxx_std_23)
 # dataset_lib adapts into population::Tape (headers only); link both at the app.
 
 # ---------------------------------------------------------------------------
@@ -143,7 +143,7 @@ add_library(cmf::transport ALIAS transport_lib)
 target_include_directories(transport_lib
   PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>")
-target_compile_features(transport_lib PUBLIC cxx_std_20)
+target_compile_features(transport_lib PUBLIC cxx_std_23)
 target_link_libraries(transport_lib PUBLIC cmf_wire cmf::population cmf::dataset spdlog::spdlog Threads::Threads)
 target_compile_definitions(transport_lib
   PUBLIC
@@ -166,7 +166,7 @@ add_library(cmf::population_venue ALIAS population_venue_lib)
 target_include_directories(population_venue_lib
   PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>")
-target_compile_features(population_venue_lib PUBLIC cxx_std_20)
+target_compile_features(population_venue_lib PUBLIC cxx_std_23)
 target_link_libraries(population_venue_lib
   PUBLIC cmf::transport spdlog::spdlog
   PRIVATE tomlplusplus::tomlplusplus)

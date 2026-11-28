@@ -1,5 +1,7 @@
 #include "population/merged_tape.hpp"
 
+#include "population/limits.hpp"
+
 #include "population/snapshot_assign.hpp"
 
 #include <algorithm>
@@ -22,8 +24,8 @@ MergedTape::MergedTape(std::vector<MergedComponent> components) {
     if (components.empty()) {
         throw std::invalid_argument("MergedTape: need at least one component");
     }
-    if (components.size() > 3) {
-        throw std::invalid_argument("MergedTape: at most 3 components");
+    if (components.size() > kMaxComponents) {
+        throw std::invalid_argument("MergedTape: at most 1024 components");
     }
 
     std::unordered_set<std::string> seen;

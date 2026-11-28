@@ -6,18 +6,6 @@
 #include <utility>
 
 namespace population {
-namespace {
-
-void ReserveLevels(SnapshotEvent& snap) {
-    if (snap.bids.capacity() < kMaxLevelsPerSide) {
-        snap.bids.reserve(kMaxLevelsPerSide);
-    }
-    if (snap.asks.capacity() < kMaxLevelsPerSide) {
-        snap.asks.reserve(kMaxLevelsPerSide);
-    }
-}
-
-}  // namespace
 
 SnapshotEvent& TapeWindow::At(std::size_t logical) noexcept {
     return slots_[(begin_ + logical) % slots_.size()];
@@ -33,46 +21,26 @@ void TapeWindow::ClearKept(SnapshotEvent& snap) {
     snap.symbol.clear();
     snap.bids.clear();
     snap.asks.clear();
-    ReserveLevels(snap);
 }
 
 void TapeWindow::BindLag(std::uint64_t max_lag_ns) noexcept { max_lag_ns_ = max_lag_ns; }
 
-std::size_t TapeWindow::SteadySlots() const noexcept {
-    // No lag: trim keeps only the newest snap.
-    if (max_lag_ns_ == 0 || min_gap_ns_ == 0) {
-        return max_lag_ns_ == 0 ? 1 : 2;
-    }
-    const std::uint64_t inside =
-        max_lag_ns_ / min_gap_ns_ + (max_lag_ns_ % min_gap_ns_ == 0 ? 0 : 1);
-    return static_cast<std::size_t>(inside) + 1;
-}
-
-void TapeWindow::GrowTo(std::size_t next_n) {
-    if (slots_.size() >= next_n) {
+void TapeWindow::EnsureRoom() {
+    if (size_ < slots_.size()) {
         return;
     }
-    std::vector<SnapshotEvent> next(next_n);
-    for (SnapshotEvent& slot : next) {
-        ReserveLevels(slot);
+    if (begin_ == 0) {
+        slots_.emplace_back();
+        return;
     }
+    std::vector<SnapshotEvent> next;
+    next.reserve(size_ + 1);
     for (std::size_t i = 0; i < size_; ++i) {
-        next[i] = std::move(At(i));
+        next.push_back(std::move(At(i)));
     }
+    next.emplace_back();
     slots_ = std::move(next);
     begin_ = 0;
-}
-
-void TapeWindow::EnsureRoom() {
-    std::size_t need = SteadySlots();
-    if (size_ + 1 > need) {
-        // History was not trimmed. Double so a burst does not allocate every snap.
-        need = slots_.empty() ? 1 : slots_.size() * 2;
-        if (need < size_ + 1) {
-            need = size_ + 1;
-        }
-    }
-    GrowTo(need);
 }
 
 void TapeWindow::Append(const SnapshotEvent& snap) {
@@ -84,15 +52,8 @@ void TapeWindow::Append(const SnapshotEvent& snap) {
             "population::TapeWindow: Append requires ts > head (got " +
             std::to_string(snap.ts_ns) + " <= " + std::to_string(At(size_ - 1).ts_ns) + ")");
     }
-    if (size_ != 0) {
-        const std::uint64_t gap = snap.ts_ns - At(size_ - 1).ts_ns;
-        if (min_gap_ns_ == 0 || gap < min_gap_ns_) {
-            min_gap_ns_ = gap;
-        }
-    }
     EnsureRoom();
     SnapshotEvent& dest = At(size_);
-    ReserveLevels(dest);
     AssignSnapshot(dest, snap);
     ++size_;
 }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "population/limits.hpp"
 #include "population/book_diff.hpp"
 #include "population/clock.hpp"
 #include "population/impact.hpp"
@@ -12,7 +13,6 @@
 #include "population/tick.hpp"
 #include "population/types.hpp"
 
-#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -24,10 +24,7 @@ namespace population {
 // stretch of the bar grid. One Advance lands on the next quote. One hour.
 inline constexpr std::uint64_t kSessionGapNs = 3'600'000'000'000ULL;
 
-// Open carries at most three books: spot, futures, option.
-inline constexpr std::size_t kMaxComponents = 3;
-
-// One Open.components[] row + its tape (IMPL 3.2).
+// One Open.components[] row + its tape.
 struct ComponentSpec {
     std::string component_id;
     double tick_size = 0.0;
@@ -54,7 +51,7 @@ private:
     TapeWindow window_;
 };
 
-// Bundle population (1…3 components): one pop_ts, per-component FileBook/TapeWindow,
+// Bundle population (1…kMaxComponents): one pop_ts, per-component FileBook/TapeWindow,
 // impact + working keyed by (slot, component_id).
 class Population {
 public:
@@ -85,6 +82,16 @@ public:
     // A hole longer than kSessionGapNs jumps to the next quote instead.
     void SetStepNs(std::int64_t step_ns);
 
+    // No tapes. The session feeds snaps as rows arrive and drops them after expiry.
+    explicit Population(std::vector<SlotConfig> slots);
+    void StartAt(std::uint64_t ts_ns);
+    void AdvanceTo(std::uint64_t ts_ns);
+    // Creates the component on the first snap. Later snaps reuse that slot.
+    // True when this call allocated the slot.
+    bool Observe(const std::string& component_id, double tick_size, const SnapshotEvent& snap);
+    // Drops components whose symbol date is strictly before the clock's calendar day.
+    void DropExpired(std::uint64_t now_ns);
+
     [[nodiscard]] bool started() const noexcept { return started_; }
     [[nodiscard]] bool ended() const noexcept { return ended_; }
     [[nodiscard]] const Clock& clock() const noexcept { return clock_; }
@@ -113,11 +120,10 @@ private:
         std::vector<Level> last_asks;
     };
 
-    // Parallel to slots_. Books and impact are arrays over components_[0..2].
+    // Parallel to slots_. send and impact are sized to components_.
     struct SlotState {
-        std::array<ComponentSend, kMaxComponents> send{};
-        std::array<ImpactState, kMaxComponents> impact{ImpactState{0.0}, ImpactState{0.0},
-                                                       ImpactState{0.0}};
+        std::vector<ComponentSend> send;
+        std::vector<ImpactState> impact;
         SlotOrders orders;
         std::vector<Trade> pending;
     };

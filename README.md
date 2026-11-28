@@ -10,7 +10,7 @@ glossary: [`docs/GLOSSARY.md`](docs/GLOSSARY.md).
 
 ## Requirements
 
-- CMake ≥ 3.14, C++20 compiler
+- CMake ≥ 3.14, C++23 compiler
 - Apache Arrow C++ (`pacman -S arrow` / `apt install libarrow-dev`) for Feather datasets
 - Network to fetch [toml++](https://github.com/marzer/tomlplusplus), nlohmann/json (and GoogleTest if tests on) on first configure
 

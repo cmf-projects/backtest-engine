@@ -1,11 +1,17 @@
 #include "population/population.hpp"
 
+#include "hot_log.hpp"
+
 #include "population/book_diff.hpp"
 #include "population/price_ticks.hpp"
 #include "population/snapshot_assign.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdint>
+#include <ctime>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -49,7 +55,7 @@ const SnapshotEvent& Component::current() const {
 Population::Population(std::vector<ComponentSpec> components, std::vector<SlotConfig> slots)
     : slots_(std::move(slots)) {
     if (components.empty() || components.size() > kMaxComponents) {
-        throw std::invalid_argument("population: components must be 1…3");
+        throw std::invalid_argument("population: components must be 1…1024");
     }
 
     std::vector<MergedComponent> merged;
@@ -87,6 +93,8 @@ Population::Population(std::vector<ComponentSpec> components, std::vector<SlotCo
     for (std::size_t si = 0; si < slots_.size(); ++si) {
         SlotState& state = slot_state_[si];
         state.pending.reserve(kTradeCapacity);
+        state.send.resize(components_.size());
+        state.impact.assign(components_.size(), ImpactState{slots_[si].impact_lambda});
         for (std::size_t ci = 0; ci < components_.size(); ++ci) {
             state.send[ci].last_bids.reserve(kMaxLevelsPerSide);
             state.send[ci].last_asks.reserve(kMaxLevelsPerSide);
@@ -107,6 +115,112 @@ Population::Population(std::string component_id, double tick_size, TapePtr tape,
                        std::vector<SlotConfig> slots)
     : Population(MakeSingleSpec(std::move(component_id), tick_size, std::move(tape)),
                  std::move(slots)) {}
+
+Population::Population(std::vector<SlotConfig> slots) : slots_(std::move(slots)) {
+    match_bids_scratch_.reserve(kMaxLevelsPerSide);
+    match_asks_scratch_.reserve(kMaxLevelsPerSide);
+    view_scratch_.bids.reserve(kMaxLevelsPerSide);
+    view_scratch_.asks.reserve(kMaxLevelsPerSide);
+    diff_scratch_.bids.reserve(kMaxDiffLevelsPerSide);
+    diff_scratch_.asks.reserve(kMaxDiffLevelsPerSide);
+    ValidateSlots(slots_);
+    slot_state_.resize(slots_.size());
+    components_.reserve(64);
+    for (std::size_t si = 0; si < slots_.size(); ++si) {
+        slot_state_[si].pending.reserve(kTradeCapacity);
+        slot_state_[si].send.reserve(64);
+        slot_state_[si].impact.reserve(64);
+    }
+}
+
+void Population::StartAt(std::uint64_t ts_ns) {
+    if (started_) {
+        throw std::logic_error("population: already started");
+    }
+    clock_.Start(ts_ns);
+    started_ = true;
+}
+
+void Population::AdvanceTo(std::uint64_t ts_ns) {
+    if (!started_) {
+        throw std::logic_error("population: AdvanceTo before Start");
+    }
+    clock_.AdvanceTo(ts_ns);
+    matched_this_pop_ = false;
+}
+
+bool Population::Observe(const std::string& component_id, double tick_size, const SnapshotEvent& snap) {
+    Component* component = MutableComponent(component_id);
+    const bool born = component == nullptr;
+    if (component == nullptr) {
+        if (components_.size() >= kMaxComponents) {
+            throw std::runtime_error("population: component cap");
+        }
+        Component born;
+        born.component_id_ = component_id;
+        born.index_ = components_.size();
+        born.tick_size_ = tick_size;
+        std::uint64_t max_lag = 0;
+        for (const SlotConfig& cfg : slots_) {
+            max_lag = std::max(max_lag, cfg.md_lag_ns);
+        }
+        born.window_.BindLag(max_lag);
+        components_.push_back(std::move(born));
+        component = &components_.back();
+        for (std::size_t si = 0; si < slot_state_.size(); ++si) {
+            slot_state_[si].send.emplace_back();
+            slot_state_[si].impact.emplace_back(slots_[si].impact_lambda);
+        }
+    }
+    if (!component->current_.has_value()) {
+        component->current_.emplace();
+    }
+    AssignSnapshot(*component->current_, snap);
+    if (component->window_.empty() || snap.ts_ns > component->window_.head_ts_ns()) {
+        component->window_.Append(*component->current_);
+    }
+    return born;
+}
+
+void Population::DropExpired(std::uint64_t now_ns) {
+    const std::time_t sec = static_cast<std::time_t>(now_ns / 1000000000ULL);
+    std::tm tm{};
+    gmtime_r(&sec, &tm);
+    const int today = (tm.tm_year + 1900) * 10000 + (tm.tm_mon + 1) * 100 + tm.tm_mday;
+    for (std::size_t i = 0; i < components_.size();) {
+        int expiry = 0;
+        const std::string& id = components_[i].component_id_;
+        for (std::size_t c = 0; c + 8 <= id.size(); ++c) {
+            bool digits = true;
+            for (int k = 0; k < 8; ++k) {
+                if (id[c + static_cast<std::size_t>(k)] < '0' || id[c + static_cast<std::size_t>(k)] > '9') {
+                    digits = false;
+                    break;
+                }
+            }
+            if (!digits) {
+                continue;
+            }
+            expiry = 0;
+            for (int k = 0; k < 8; ++k) {
+                expiry = expiry * 10 + (id[c + static_cast<std::size_t>(k)] - '0');
+            }
+            break;
+        }
+        if (expiry > 0 && today > expiry) {
+            components_.erase(components_.begin() + static_cast<std::ptrdiff_t>(i));
+            for (std::size_t j = i; j < components_.size(); ++j) {
+                components_[j].index_ = j;
+            }
+            for (SlotState& slot : slot_state_) {
+                slot.send.erase(slot.send.begin() + static_cast<std::ptrdiff_t>(i));
+                slot.impact.erase(slot.impact.begin() + static_cast<std::ptrdiff_t>(i));
+            }
+            continue;
+        }
+        ++i;
+    }
+}
 
 const Population::SlotState* Population::FindSlotState(std::uint32_t slot_id) const {
     for (std::size_t i = 0; i < slots_.size(); ++i) {
@@ -415,8 +529,13 @@ const TickView& Population::MakeTick() {
     if (!started_) {
         throw std::logic_error("population: MakeTick before Start");
     }
-
+#if CMF_HOT_LOG
+    const auto t0 = std::chrono::steady_clock::now();
+#endif
     MatchDueIfNeeded();
+#if CMF_HOT_LOG
+    const auto t1 = std::chrono::steady_clock::now();
+#endif
 
     tick_scratch_.pop_ts_ns = clock_.pop_ts_ns();
     tick_scratch_.books.clear();
@@ -519,6 +638,27 @@ const TickView& Population::MakeTick() {
     }
 
     TrimWindowForLags();
+#if CMF_HOT_LOG
+    const auto t2 = std::chrono::steady_clock::now();
+    static std::uint64_t match_ns = 0;
+    static std::uint64_t books_ns = 0;
+    static std::uint64_t n = 0;
+    static auto last = t2;
+    match_ns += static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+    books_ns += static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count());
+    ++n;
+    if (t2 - last >= std::chrono::seconds(5)) {
+        std::fprintf(stderr, "hot maketick match_ms=%.0f books_ms=%.0f n=%llu live=%zu\n",
+                     match_ns / 1e6, books_ns / 1e6, static_cast<unsigned long long>(n),
+                     components_.size());
+        match_ns = 0;
+        books_ns = 0;
+        n = 0;
+        last = t2;
+    }
+#endif
     return tick_scratch_;
 }
 
@@ -560,11 +700,37 @@ bool Population::Advance() {
         if (*pending > next) {
             break;
         }
+#if CMF_HOT_LOG
+        const auto t0 = std::chrono::steady_clock::now();
+#endif
         if (!merge_->NextInto(step_scratch_)) {
             ended_ = true;
             return false;
         }
+#if CMF_HOT_LOG
+        const auto t1 = std::chrono::steady_clock::now();
+#endif
         ApplyMergedStep(step_scratch_);
+#if CMF_HOT_LOG
+        const auto t2 = std::chrono::steady_clock::now();
+        static std::uint64_t merge_ns = 0;
+        static std::uint64_t apply_ns = 0;
+        static std::uint64_t steps = 0;
+        static auto last = std::chrono::steady_clock::now();
+        merge_ns += static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+        apply_ns += static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count());
+        ++steps;
+        if (t2 - last >= std::chrono::seconds(5)) {
+            std::fprintf(stderr, "hot advance merge_ms=%.0f apply_ms=%.0f steps=%llu\n",
+                         merge_ns / 1e6, apply_ns / 1e6, static_cast<unsigned long long>(steps));
+            merge_ns = 0;
+            apply_ns = 0;
+            steps = 0;
+            last = t2;
+        }
+#endif
     }
     clock_.AdvanceTo(next);
     matched_this_pop_ = false;

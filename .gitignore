@@ -28,3 +28,4 @@ testdata/population/noise/
 .tools/
 heaptrack*
 profiles/
+__pycache__/

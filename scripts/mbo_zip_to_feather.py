@@ -6,13 +6,11 @@ One delivery per day, same tree the venue already walks:
 
   <out>/{fut|opt}/<YYYYMMDD>/<job>/{manifest.json,source-metadata.json,part-00000.feather}
 
-The part file is Arrow IPC (Feather V2). Rows stay in file order and are
-written as record batches of --batch-rows (default 4096). Prices are int64
-fixed-point (price_scale 1e9); a null price is UNDEF_PRICE (2^63-1).
-Timestamps are nanoseconds. action/side are ASCII codes in uint8.
-
-This is the raw MBO stream (schema_name databento_mbo), not bbo-1m.
-FeatherBboTape rejects it until an MBO adapter exists.
+The part file is Arrow IPC (Feather V2), schema_name databento_mbp: one L2
+snapshot per instrument when the visible book changes at F_LAST. Levels are
+bid_px_00..63 / ask_px_00..63 (best first). An empty slot is UNDEF_PRICE
+(2^63-1) and size 0. Prices are int64 fixed-point (price_scale 1e9).
+FeatherBboTape reads this directly.
 
   uv run --no-project --with pyarrow --with orjson scripts/mbo_zip_to_feather.py
 """
@@ -37,47 +35,123 @@ DEFAULT_BATCH = 4096
 FUT_ZIP = Path("/home/alexander/Projects/cmf-hw1-options/data/HW_1/XEUR-20260409-HTT6HHLT6R1.zip")
 OPT_ZIP = Path("/home/alexander/Projects/cmf-hw1-options/data/HW_1/XEUR-20260409-HJTR7RCAKT1.zip")
 
-COLUMNS = (
+F_LAST = 1 << 7
+MAX_LEVELS = 64
+
+_BASE_COLUMNS = (
     "ts_recv",
     "ts_event",
     "rtype",
     "publisher_id",
     "instrument_id",
-    "action",
     "side",
     "price",
     "size",
-    "channel_id",
-    "order_id",
     "flags",
-    "ts_in_delta",
     "sequence",
-    "symbol",
 )
+
+
+def _level_columns() -> tuple[str, ...]:
+    names: list[str] = []
+    for i in range(MAX_LEVELS):
+        names.append(f"bid_px_{i:02d}")
+        names.append(f"ask_px_{i:02d}")
+        names.append(f"bid_sz_{i:02d}")
+        names.append(f"ask_sz_{i:02d}")
+    return tuple(names)
+
+
+COLUMNS = _BASE_COLUMNS + _level_columns()
 
 
 def _schema():
     import pyarrow as pa
 
-    return pa.schema(
-        [
-            ("ts_recv", pa.uint64(), False),
-            ("ts_event", pa.uint64(), False),
-            ("rtype", pa.uint8(), False),
-            ("publisher_id", pa.uint16(), False),
-            ("instrument_id", pa.uint32(), False),
-            ("action", pa.uint8(), False),
-            ("side", pa.uint8(), False),
-            ("price", pa.int64(), False),
-            ("size", pa.uint32(), False),
-            ("channel_id", pa.uint16(), False),
-            ("order_id", pa.uint64(), False),
-            ("flags", pa.uint8(), False),
-            ("ts_in_delta", pa.int32(), False),
-            ("sequence", pa.uint32(), False),
-            ("symbol", pa.string(), False),
-        ]
-    )
+    fields = [
+        ("ts_recv", pa.uint64(), False),
+        ("ts_event", pa.uint64(), False),
+        ("rtype", pa.uint8(), False),
+        ("publisher_id", pa.uint16(), False),
+        ("instrument_id", pa.uint32(), False),
+        ("side", pa.uint8(), False),
+        ("price", pa.int64(), False),
+        ("size", pa.uint32(), False),
+        ("flags", pa.uint8(), False),
+        ("sequence", pa.uint32(), False),
+    ]
+    for i in range(MAX_LEVELS):
+        fields.append((f"bid_px_{i:02d}", pa.int64(), False))
+        fields.append((f"ask_px_{i:02d}", pa.int64(), False))
+        fields.append((f"bid_sz_{i:02d}", pa.uint32(), False))
+        fields.append((f"ask_sz_{i:02d}", pa.uint32(), False))
+    return pa.schema(fields)
+
+
+class _Book:
+    """Resting orders for one instrument. levels() is the L2 book."""
+
+    def __init__(self) -> None:
+        self.orders: dict[int, tuple[int, int, int]] = {}
+
+    def clear(self) -> None:
+        self.orders.clear()
+
+    def apply(self, action: int, order_id: int, side: int, price: int, size: int) -> None:
+        if action == ord("R"):
+            self.clear()
+            return
+        if order_id == 0:
+            return
+        side_ok = side in (ord("B"), ord("A"))
+        price_ok = price != UNDEF_PRICE
+        if action == ord("A"):
+            if not price_ok or size <= 0 or not side_ok:
+                self.orders.pop(order_id, None)
+                return
+            self.orders[order_id] = (side, price, size)
+            return
+        if action == ord("M"):
+            cur = self.orders.get(order_id)
+            if cur is None:
+                if price_ok and size > 0 and side_ok:
+                    self.orders[order_id] = (side, price, size)
+                return
+            cur_side, cur_px, _ = cur
+            self.orders[order_id] = (
+                side if side_ok else cur_side,
+                price if price_ok else cur_px,
+                size,
+            )
+            if size <= 0:
+                self.orders.pop(order_id, None)
+            return
+        if action == ord("C"):
+            cur = self.orders.get(order_id)
+            if cur is None:
+                return
+            cur_side, cur_px, cur_sz = cur
+            cancel = size if size > 0 else cur_sz
+            left = cur_sz - cancel
+            if left <= 0:
+                self.orders.pop(order_id, None)
+            else:
+                self.orders[order_id] = (cur_side, cur_px, left)
+
+    def levels(self) -> tuple[tuple[tuple[int, int], ...], tuple[tuple[int, int], ...]]:
+        """Bids best-first, asks best-first, each (price, qty), capped at MAX_LEVELS."""
+        bid_qty: dict[int, int] = {}
+        ask_qty: dict[int, int] = {}
+        for side, price, size in self.orders.values():
+            if size <= 0:
+                continue
+            if side == ord("B"):
+                bid_qty[price] = bid_qty.get(price, 0) + size
+            elif side == ord("A"):
+                ask_qty[price] = ask_qty.get(price, 0) + size
+        bids = tuple((px, qty) for px, qty in sorted(bid_qty.items(), reverse=True)[:MAX_LEVELS])
+        asks = tuple((px, qty) for px, qty in sorted(ask_qty.items())[:MAX_LEVELS])
+        return bids, asks
 
 
 def _check_u(name: str, value: int, bits: int, line_no: int) -> int:
@@ -209,7 +283,11 @@ def convert_day(task: dict) -> dict:
     manifest_path = out_dir / "manifest.json"
     if manifest_path.is_file() and not task["force"]:
         prev = json.loads(manifest_path.read_text())
-        if prev.get("status") == "complete" and prev.get("batch_rows") == batch_rows:
+        if (
+            prev.get("status") == "complete"
+            and prev.get("schema_name") == "databento_mbp"
+            and prev.get("batch_rows") == batch_rows
+        ):
             return {
                 "leg": task["leg"],
                 "day": day,
@@ -226,10 +304,45 @@ def convert_day(task: dict) -> dict:
     chunks: dict[str, list] = {name: [] for name in COLUMNS}
     ts_cache: dict[str, int] = {}
     symbols: dict[str, set[int]] = {}
+    books: dict[int, _Book] = {}
+    last_levels: dict[int, tuple] = {}
     rows = 0
     first_ts = 0
     last_ts = 0
     batch_sizes: list[int] = []
+
+    def append_book(ts_recv: int, ts_event: int, instrument_id: int, publisher_id: int, levels: tuple) -> None:
+        nonlocal rows, first_ts, last_ts
+        bids, asks = levels
+        cols["ts_recv"].append(ts_recv)
+        cols["ts_event"].append(ts_event)
+        cols["rtype"].append(196)
+        cols["publisher_id"].append(publisher_id)
+        cols["instrument_id"].append(instrument_id)
+        cols["side"].append(ord("N"))
+        cols["price"].append(bids[0][0] if bids else (asks[0][0] if asks else UNDEF_PRICE))
+        cols["size"].append(1)
+        cols["flags"].append(F_LAST)
+        cols["sequence"].append(rows + 1)
+        for i in range(MAX_LEVELS):
+            if i < len(bids):
+                cols[f"bid_px_{i:02d}"].append(bids[i][0])
+                cols[f"bid_sz_{i:02d}"].append(bids[i][1])
+            else:
+                cols[f"bid_px_{i:02d}"].append(UNDEF_PRICE)
+                cols[f"bid_sz_{i:02d}"].append(0)
+            if i < len(asks):
+                cols[f"ask_px_{i:02d}"].append(asks[i][0])
+                cols[f"ask_sz_{i:02d}"].append(asks[i][1])
+            else:
+                cols[f"ask_px_{i:02d}"].append(UNDEF_PRICE)
+                cols[f"ask_sz_{i:02d}"].append(0)
+        if rows == 0:
+            first_ts = ts_recv
+        rows += 1
+        last_ts = ts_recv
+        if len(cols["ts_recv"]) >= batch_rows:
+            batch_sizes.append(_flush_batch(chunks, cols, schema))
 
     with zipfile.ZipFile(zip_path) as zf, zf.open(member) as fh:
         for line_no, raw in enumerate(fh, start=1):
@@ -246,30 +359,27 @@ def convert_day(task: dict) -> dict:
             order_id = int(rec["order_id"])
             if order_id < 0 or order_id > UINT64_MAX:
                 raise ValueError(f"{member}:{line_no}: order_id={order_id}")
-
-            cols["ts_recv"].append(ts_recv)
-            cols["ts_event"].append(ts_event)
-            cols["rtype"].append(_check_u("rtype", int(hd["rtype"]), 8, line_no))
-            cols["publisher_id"].append(_check_u("publisher_id", int(hd["publisher_id"]), 16, line_no))
-            cols["instrument_id"].append(instrument_id)
-            cols["action"].append(_ascii_code("action", rec["action"], line_no))
-            cols["side"].append(_ascii_code("side", rec["side"], line_no))
-            cols["price"].append(parse_px(rec["price"], line_no))
-            cols["size"].append(_check_u("size", int(rec["size"]), 32, line_no))
-            cols["channel_id"].append(_check_u("channel_id", int(rec["channel_id"]), 16, line_no))
-            cols["order_id"].append(order_id)
-            cols["flags"].append(_check_u("flags", int(rec["flags"]), 8, line_no))
-            cols["ts_in_delta"].append(_check_i("ts_in_delta", int(rec["ts_in_delta"]), 32, line_no))
-            cols["sequence"].append(_check_u("sequence", int(rec["sequence"]), 32, line_no))
-            cols["symbol"].append(symbol)
-
+            action = _ascii_code("action", rec["action"], line_no)
             symbols.setdefault(symbol, set()).add(instrument_id)
-            if rows == 0:
-                first_ts = ts_recv
-            rows += 1
-            last_ts = ts_recv
-            if len(cols["ts_recv"]) >= batch_rows:
-                batch_sizes.append(_flush_batch(chunks, cols, schema))
+            if action in (ord("T"), ord("F"), ord("N")):
+                continue
+            side = _ascii_code("side", rec["side"], line_no)
+            price = parse_px(rec["price"], line_no)
+            size = _check_u("size", int(rec["size"]), 32, line_no)
+            flags = _check_u("flags", int(rec["flags"]), 8, line_no)
+            book = books.get(instrument_id)
+            if book is None:
+                book = _Book()
+                books[instrument_id] = book
+            book.apply(action, order_id, side, price, size)
+            if (flags & F_LAST) == 0:
+                continue
+            levels = book.levels()
+            if last_levels.get(instrument_id) == levels:
+                continue
+            last_levels[instrument_id] = levels
+            publisher_id = _check_u("publisher_id", int(hd["publisher_id"]), 16, line_no)
+            append_book(ts_recv, ts_event, instrument_id, publisher_id, levels)
 
     if cols["ts_recv"]:
         batch_sizes.append(_flush_batch(chunks, cols, schema))
@@ -303,7 +413,7 @@ def convert_day(task: dict) -> dict:
         )
     metadata = {
         "dataset": "XEUR.EOBI",
-        "schema": "mbo",
+        "schema": "bbo-1m",
         "stype_out": "instrument_id",
         "leg": task["leg"],
         "mappings": mappings,
@@ -327,7 +437,7 @@ def convert_day(task: dict) -> dict:
         ],
         "price_scale": PRICE_SCALE,
         "undef_price": UNDEF_PRICE,
-        "schema_name": "databento_mbo",
+        "schema_name": "databento_mbp",
         "schema_version": 1,
         "side_encoding": "ASCII uint8",
         "action_encoding": "ASCII uint8",
@@ -437,7 +547,7 @@ def main() -> int:
     results.sort(key=lambda r: (r["leg"], r["day"]))
     summary = {
         "batch_rows": args.batch_rows,
-        "schema_name": "databento_mbo",
+        "schema_name": "databento_mbp",
         "price_scale": PRICE_SCALE,
         "days": results,
         "total_rows": sum(r["rows"] for r in results),

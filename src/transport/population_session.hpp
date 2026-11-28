@@ -3,6 +3,7 @@
 // Venue-side population run over an existing UDS + SPSC pair.
 // docs/POPULATION_TZ.md §5.3–5.5; IMPL 2.2 (wires Population).
 
+#include "dataset/feather_tape.hpp"
 #include "population/population.hpp"
 #include "population/tape.hpp"
 #include "transport/bus_messages.hpp"
@@ -76,6 +77,16 @@ private:
 
     [[nodiscard]] Step SendTickFromPopulation();
     [[nodiscard]] population::TapePtr MakeTape(const BusComponent& component) const;
+    [[nodiscard]] bool AdvanceJournals();
+    void DrainJournals(std::uint64_t now_ns);
+
+    struct JournalHead {
+        std::unique_ptr<dataset::FeatherJournal> journal;
+        std::string symbol;
+        population::SnapshotEvent event;
+        double tick = 0.0;
+        bool ok = false;
+    };
 
     UdsConn& conn_;
     QueueRegistry& registry_;
@@ -90,6 +101,8 @@ private:
     BusOrderBatch order_batch_buf_;         // reused by OnOrders decode
     population::OrderBatch domain_batch_;   // reused by ToOrderBatchInto
     TickSizeByComponent tick_sizes_;        // from Open.components; wire price grid
+    std::vector<JournalHead> journals_;
+    std::int64_t step_ns_ = -1;
 };
 
 }  // namespace transport

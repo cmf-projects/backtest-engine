@@ -130,15 +130,15 @@ TEST(PopulationBundle, StartAndAdvanceFollowMergedTimeline) {
 TEST(PopulationBundle, RejectsEmptyOrTooManyComponents) {
     EXPECT_THROW(Population(std::vector<ComponentSpec>{}, OneSlot()), std::invalid_argument);
 
-    std::vector<ComponentSpec> four;
-    for (int i = 0; i < 4; ++i) {
-        four.push_back(ComponentSpec{
+    std::vector<ComponentSpec> too_many;
+    for (int i = 0; i < 1025; ++i) {
+        too_many.push_back(ComponentSpec{
             .component_id = "c" + std::to_string(i),
             .tick_size = 0.01,
             .tape = MakeTape({Ev("X", 1, 100, 1)}),
         });
     }
-    EXPECT_THROW(Population(std::move(four), OneSlot()), std::invalid_argument);
+    EXPECT_THROW(Population(std::move(too_many), OneSlot()), std::invalid_argument);
 }
 
 TEST(PopulationBundle, ImpactIsPerSlotAndComponent) {

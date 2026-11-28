@@ -35,7 +35,7 @@ struct MergedComponent {
 
 class MergedTape {
 public:
-    // 1…N non-null tapes with unique non-empty component_id.
+    // 1…kMaxComponents non-null tapes with unique non-empty component_id.
     // Each tape must already satisfy Tape contract (pending first event).
     explicit MergedTape(std::vector<MergedComponent> components);
 

@@ -114,6 +114,38 @@ TEST(FeatherBboTape, Errors) {
     EXPECT_THROW(FeatherBboTape(kRoot + "/missing", "MGCZ5"), std::runtime_error);
 }
 
+TEST(FeatherBboTape, ListsEverySymbolAndReusesThePart) {
+    const auto symbols = dataset::ListFeatherSymbols(kDay1);
+    ASSERT_EQ(symbols.size(), 3u);
+    EXPECT_EQ(symbols[0], "MGCZ5");
+    EXPECT_EQ(symbols[1], "MGCZ5-MGCG6");
+    EXPECT_EQ(symbols[2], "SILZ5");
+
+    FeatherBboTape first(kDay1, "MGCZ5");
+    FeatherBboTape second(kDay1, "SILZ5");
+    EXPECT_EQ(Drain(first).size(), 2u);
+    const auto other = Drain(second);
+    ASSERT_FALSE(other.empty());
+    EXPECT_EQ(other[0].symbol, "SILZ5");
+}
+
+TEST(FeatherBboTape, ReadsDeeperLevels) {
+    const std::string path = std::string(CMF_TESTDATA_DIR) + "/dataset/mbp/20260406/XEUR-L2-TEST";
+    FeatherBboTape tape(path, "FCEU SI 20260615 PS");
+    const auto events = Drain(tape);
+    ASSERT_EQ(events.size(), 1u);
+    ASSERT_EQ(events[0].bids.size(), 2u);
+    EXPECT_DOUBLE_EQ(events[0].bids[0].price, 100.0);
+    EXPECT_EQ(events[0].bids[0].qty, 8u);
+    EXPECT_DOUBLE_EQ(events[0].bids[1].price, 99.0);
+    EXPECT_EQ(events[0].bids[1].qty, 4u);
+    ASSERT_EQ(events[0].asks.size(), 2u);
+    EXPECT_DOUBLE_EQ(events[0].asks[0].price, 101.0);
+    EXPECT_EQ(events[0].asks[0].qty, 2u);
+    EXPECT_DOUBLE_EQ(events[0].asks[1].price, 102.0);
+    EXPECT_EQ(events[0].asks[1].qty, 1u);
+}
+
 TEST(MakeTape, PicksAdapterByPath) {
     const auto feather = dataset::MakeTape(kRoot, "SILZ5");
     EXPECT_EQ(feather->FirstSymbol(), "SILZ5");

@@ -1,5 +1,7 @@
 #include "transport/population_session.hpp"
 
+#include "hot_log.hpp"
+
 #include "dataset/make_tape.hpp"
 #include "population/price_ticks.hpp"
 #include "transport/bus_framing.hpp"
@@ -9,6 +11,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <cstdint>
 #include <exception>
 #include <stdexcept>
 #include <thread>
@@ -114,7 +118,13 @@ PopulationSession::Step PopulationSession::SendTickFromPopulation() {
     if (pop_ == nullptr) {
         return FinishFatal(ErrorCode::Internal, "no population", false);
     }
+#if CMF_HOT_LOG
+    const auto t0 = std::chrono::steady_clock::now();
+#endif
     ToBusTickInto(pop_->MakeTick(), tick_buf_, tick_sizes_);
+#if CMF_HOT_LOG
+    const auto t1 = std::chrono::steady_clock::now();
+#endif
 #if SPDLOG_ACTIVE_LEVEL <= SPDLOG_LEVEL_TRACE
     for (const auto& slot : tick_buf_.slots) {
         for (const auto& tr : slot.trades) {
@@ -129,9 +139,37 @@ PopulationSession::Step PopulationSession::SendTickFromPopulation() {
               tick_buf_.books.size());
 #endif
     EncodeBusTickInto(tick_buf_, encode_buf_);
+#if CMF_HOT_LOG
+    const auto t2 = std::chrono::steady_clock::now();
+#endif
     if (!SendOut(BusMsgType::Tick, encode_buf_)) {
         return FinishFatal(ErrorCode::DrainTimeout, "ring full before drain_timeout", false);
     }
+#if CMF_HOT_LOG
+    const auto t3 = std::chrono::steady_clock::now();
+    static std::uint64_t make_ns = 0;
+    static std::uint64_t enc_ns = 0;
+    static std::uint64_t send_ns = 0;
+    static std::uint64_t n = 0;
+    static auto last = t3;
+    make_ns += static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+    enc_ns += static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count());
+    send_ns += static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(t3 - t2).count());
+    ++n;
+    if (t3 - last >= std::chrono::seconds(5)) {
+        std::fprintf(stderr, "hot sendtick make_ms=%.0f encode_ms=%.0f send_ms=%.0f n=%llu bytes=%zu\n",
+                     make_ns / 1e6, enc_ns / 1e6, send_ns / 1e6, static_cast<unsigned long long>(n),
+                     encode_buf_.size());
+        make_ns = 0;
+        enc_ns = 0;
+        send_ns = 0;
+        n = 0;
+        last = t3;
+    }
+#endif
     phase_ = SessionPhase::AwaitOrderOrAdvance;
     return std::nullopt;
 }
@@ -160,9 +198,30 @@ PopulationSession::Step PopulationSession::OnOpen(const std::vector<std::uint8_t
                 throw std::runtime_error("tick_size does not divide 1");
             }
             tick_sizes_[component.component_id] = tick_size;
+            if (component.sec_code == "*") {
+                JournalHead head;
+                head.journal = std::make_unique<dataset::FeatherJournal>(component.dataset_path);
+                head.tick = tick_size;
+                head.ok = head.journal->Next(head.symbol, head.event);
+                LOG_INFO("journal component={} path={} first={}", component.component_id,
+                         component.dataset_path, head.ok ? head.symbol : "-");
+                journals_.push_back(std::move(head));
+                continue;
+            }
             LOG_INFO("loading dataset component={} path={} symbol={}", component.component_id,
                      component.dataset_path, component.sec_code);
-            auto tape = MakeTape(component);
+            population::TapePtr tape;
+            try {
+                tape = MakeTape(component);
+            } catch (const std::exception& ex) {
+                const std::string msg = ex.what();
+                if (msg.find("no rows for symbol") == std::string::npos) {
+                    throw;
+                }
+                LOG_INFO("skip component={} symbol={} no rows", component.component_id,
+                         component.sec_code);
+                continue;
+            }
             if (tape == nullptr) {
                 throw std::runtime_error("make_tape returned null");
             }
@@ -172,13 +231,38 @@ PopulationSession::Step PopulationSession::OnOpen(const std::vector<std::uint8_t
                                                       .tick_size = tick_size,
                                                       .tape = std::move(tape)});
         }
+        if (specs.empty() && journals_.empty()) {
+            throw std::runtime_error("no components with rows");
+        }
         if (open.step_ns == 0 || open.step_ns < -1) {
             throw std::runtime_error("bad step_ns");
         }
+        step_ns_ = open.step_ns;
+        if (specs.empty()) {
+            std::uint64_t start = 0;
+            bool any = false;
+            for (const JournalHead& head : journals_) {
+                if (!head.ok) {
+                    continue;
+                }
+                if (!any || head.event.ts_ns < start) {
+                    start = head.event.ts_ns;
+                    any = true;
+                }
+            }
+            if (!any) {
+                throw std::runtime_error("journals have no rows");
+            }
+            pop_ = std::make_unique<population::Population>(ToSlotConfigs(open.slots));
+            pop_->SetStepNs(open.step_ns);
+            DrainJournals(start);
+            pop_->StartAt(start);
+        } else {
         pop_ = std::make_unique<population::Population>(std::move(specs),
                                                         ToSlotConfigs(open.slots));
         pop_->SetStepNs(open.step_ns);
         pop_->Start();
+        }
         LOG_INFO("population started pop_ts={} components={} step_ns={} delta_ns={}",
                  pop_->clock().pop_ts_ns(), open.components.size(), open.step_ns,
                  open.slots.empty() ? 0 : open.slots.front().delta_ns);
@@ -234,6 +318,82 @@ PopulationSession::Step PopulationSession::OnOrders(const std::vector<std::uint8
     return std::nullopt;
 }
 
+namespace {
+
+[[nodiscard]] std::string ComponentId(std::string_view symbol) {
+    std::string id;
+    id.reserve(symbol.size());
+    for (const char c : symbol) {
+        const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                        (c >= '0' && c <= '9') || c == '_' || c == '-';
+        if (ok) {
+            id.push_back(c);
+        } else if (c == '.') {
+            id.push_back('p');
+        } else if (!id.empty() && id.back() != '_') {
+            id.push_back('_');
+        }
+    }
+    while (!id.empty() && id.back() == '_') {
+        id.pop_back();
+    }
+    return id;
+}
+
+}  // namespace
+
+void PopulationSession::DrainJournals(std::uint64_t now_ns) {
+    for (JournalHead& head : journals_) {
+        while (head.ok && head.event.ts_ns <= now_ns) {
+            const std::string id = ComponentId(head.symbol);
+            tick_sizes_[id] = head.tick;
+            if (pop_->Observe(id, head.tick, head.event)) {
+#if CMF_HOT_LOG
+                std::fprintf(stderr, "instrument arrive %s\n", id.c_str());
+#endif
+            }
+            head.ok = head.journal->Next(head.symbol, head.event);
+        }
+    }
+    const std::size_t before = pop_->component_count();
+    pop_->DropExpired(now_ns);
+    if (pop_->component_count() != before) {
+#if CMF_HOT_LOG
+        std::fprintf(stderr, "instrument drop left=%zu\n", pop_->component_count());
+#endif
+    }
+}
+
+bool PopulationSession::AdvanceJournals() {
+    std::optional<std::uint64_t> pending;
+    for (const JournalHead& head : journals_) {
+        if (!head.ok) {
+            continue;
+        }
+        if (!pending.has_value() || head.event.ts_ns < *pending) {
+            pending = head.event.ts_ns;
+        }
+    }
+    if (!pending.has_value()) {
+        return false;
+    }
+    const std::uint64_t pop = pop_->clock().pop_ts_ns();
+    std::uint64_t next = 0;
+    if (*pending > pop && (*pending - pop) > population::kSessionGapNs) {
+        next = *pending;
+    } else if (step_ns_ == -1) {
+        next = *pending;
+    } else {
+        next = pop + static_cast<std::uint64_t>(step_ns_);
+    }
+    if (next <= pop) {
+        return false;
+    }
+    DrainJournals(next);
+    pop_->AdvanceTo(next);
+    return true;
+}
+
 PopulationSession::Step PopulationSession::OnAdvance(const std::vector<std::uint8_t>& payload) {
     if (!DecodeBusAdvance(payload.data(), payload.size())) {
         return FinishFatal(ErrorCode::Internal, "bad Advance", false);
@@ -241,14 +401,35 @@ PopulationSession::Step PopulationSession::OnAdvance(const std::vector<std::uint
     if (pop_ == nullptr) {
         return FinishFatal(ErrorCode::Internal, "no population", false);
     }
-    if (!pop_->Advance()) {
+#if CMF_HOT_LOG
+    const auto t0 = std::chrono::steady_clock::now();
+#endif
+    const bool stepped = journals_.empty() ? pop_->Advance() : AdvanceJournals();
+    if (!stepped) {
         EncodeBusEndInto(encode_buf_);
         if (!SendOut(BusMsgType::End, encode_buf_)) {
             return FinishFatal(ErrorCode::Internal, "End send failed", false);
         }
         return FinishOk(ErrorCode::Unspecified, "tape end", false);
     }
-    return SendTickFromPopulation();
+    const Step step = SendTickFromPopulation();
+#if CMF_HOT_LOG
+    const auto t1 = std::chrono::steady_clock::now();
+    static std::uint64_t adv_ns = 0;
+    static std::uint64_t n = 0;
+    static auto last = t1;
+    adv_ns += static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+    ++n;
+    if (t1 - last >= std::chrono::seconds(5)) {
+        std::fprintf(stderr, "hot session advance_ms=%.0f n=%llu\n", adv_ns / 1e6,
+                     static_cast<unsigned long long>(n));
+        adv_ns = 0;
+        n = 0;
+        last = t1;
+    }
+#endif
+    return step;
 }
 
 FinishSessionStatus PopulationSession::Run() {

@@ -1,5 +1,7 @@
 #include "dataset/feather_tape.hpp"
 
+#include "hot_log.hpp"
+
 #include "population/snapshot_assign.hpp"
 #include "population/types.hpp"
 
@@ -14,10 +16,13 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <mutex>
 #include <stdexcept>
@@ -27,15 +32,17 @@
 #include <utility>
 
 namespace dataset {
-namespace {
 
 namespace fs = std::filesystem;
-using population::Level;
-using population::SnapshotEvent;
 
-constexpr std::string_view kSchemaName = "databento_bbo_1m";
+constexpr std::string_view kSchemaBbo = "databento_bbo_1m";
+constexpr std::string_view kSchemaMbp = "databento_mbp";
+
 // Databento UNDEF_PRICE: no resting order on that side during the interval.
 constexpr std::int64_t kUndefPrice = std::numeric_limits<std::int64_t>::max();
+
+using population::Level;
+using population::SnapshotEvent;
 
 template <class T>
 [[nodiscard]] T Unwrap(arrow::Result<T> result, const fs::path& file) {
@@ -78,42 +85,45 @@ template <class ArrowType>
     }
 }
 
-}  // namespace
-
-struct CachedDir {
+struct FeatherBboTape::DirMeta {
     double price_scale = 0.0;
-    std::unordered_set<std::uint32_t> instrument_ids;
     std::vector<std::string> filenames;
+    std::vector<std::string> symbols;
+    std::unordered_map<std::uint32_t, std::string> id_to_symbol;
 };
 
-[[nodiscard]] CachedDir ParseDir(const fs::path& dir, const std::string& symbol) {
+std::shared_ptr<const FeatherBboTape::DirMeta> FeatherBboTape::LoadDir(const fs::path& dir) {
     const fs::path manifest_path = dir / "manifest.json";
     const fs::path metadata_path = dir / "source-metadata.json";
     const auto manifest = ReadJson(manifest_path);
     const auto metadata = ReadJson(metadata_path);
-    CachedDir info;
+    auto info = std::make_shared<FeatherBboTape::DirMeta>();
     try {
         const auto schema = manifest.at("schema_name").get<std::string>();
-        if (schema != kSchemaName) {
+        if (schema != kSchemaBbo && schema != kSchemaMbp) {
             throw std::runtime_error("unsupported schema '" + schema + "' in " +
-                                     manifest_path.string() + " (want " +
-                                     std::string(kSchemaName) + ")");
+                                     manifest_path.string() + " (want " + std::string(kSchemaBbo) +
+                                     " or " + std::string(kSchemaMbp) + ")");
         }
-        info.price_scale = manifest.at("price_scale").get<double>();
+        info->price_scale = manifest.at("price_scale").get<double>();
+        std::unordered_set<std::string> seen;
         for (const auto& mapping : metadata.at("mappings")) {
-            if (mapping.at("raw_symbol").get<std::string>() != symbol) {
-                continue;
+            const auto symbol = mapping.at("raw_symbol").get<std::string>();
+            if (seen.insert(symbol).second) {
+                info->symbols.push_back(symbol);
             }
             for (const auto& interval : mapping.at("intervals")) {
-                info.instrument_ids.insert(static_cast<std::uint32_t>(
-                    std::stoul(interval.at("symbol").get<std::string>())));
+                info->id_to_symbol.emplace(
+                    static_cast<std::uint32_t>(std::stoul(interval.at("symbol").get<std::string>())),
+                    symbol);
             }
         }
-        if (!(info.price_scale > 0.0)) {
+        std::sort(info->symbols.begin(), info->symbols.end());
+        if (!(info->price_scale > 0.0)) {
             throw std::runtime_error("bad price_scale in " + manifest_path.string());
         }
         for (const auto& part : manifest.at("parts")) {
-            info.filenames.push_back(part.at("filename").get<std::string>());
+            info->filenames.push_back(part.at("filename").get<std::string>());
         }
     } catch (const nlohmann::json::exception& e) {
         throw std::runtime_error("bad sidecar in " + dir.string() + ": " + e.what());
@@ -121,19 +131,19 @@ struct CachedDir {
     return info;
 }
 
-[[nodiscard]] CachedDir CachedSidecar(const fs::path& dir, const std::string& symbol) {
+std::shared_ptr<const FeatherBboTape::DirMeta> FeatherBboTape::CachedDir(const fs::path& dir) {
     static std::mutex mu;
-    static std::unordered_map<std::string, CachedDir> cache;
-    const std::string key = dir.string() + "\n" + symbol;
+    static std::unordered_map<std::string, std::shared_ptr<const FeatherBboTape::DirMeta>> cache;
+    const std::string key = dir.string();
     std::lock_guard lock(mu);
     const auto it = cache.find(key);
     if (it != cache.end()) {
         return it->second;
     }
-    return cache.emplace(key, ParseDir(dir, symbol)).first->second;
+    return cache.emplace(key, LoadDir(dir)).first->second;
 }
 
-void FeatherBboTape::CollectParts(const fs::path& dir) {
+void FeatherBboTape::CollectInto(const fs::path& dir, std::vector<ListedPart>& out) {
     const fs::path manifest_path = dir / "manifest.json";
     if (!fs::is_regular_file(manifest_path)) {
         std::vector<fs::path> subdirs;
@@ -144,20 +154,18 @@ void FeatherBboTape::CollectParts(const fs::path& dir) {
         }
         std::sort(subdirs.begin(), subdirs.end());
         for (const auto& sub : subdirs) {
-            CollectParts(sub);
+            CollectInto(sub, out);
         }
         return;
     }
 
-    const CachedDir cached = CachedSidecar(dir, symbol_);
-    for (const std::string& filename : cached.filenames) {
-        ListedPart part;
-        part.file = dir / filename;
-        part.price_scale = cached.price_scale;
-        part.instrument_ids = cached.instrument_ids;
-        parts_.push_back(std::move(part));
+    const std::shared_ptr<const DirMeta> meta = CachedDir(dir);
+    for (const std::string& filename : meta->filenames) {
+        out.push_back(ListedPart{.file = dir / filename, .meta = meta});
     }
 }
+
+void FeatherBboTape::CollectParts(const fs::path& dir) { CollectInto(dir, parts_); }
 
 namespace {
 
@@ -390,10 +398,8 @@ private:
     std::vector<Chunk> extras_;
 };
 
-FeatherBboTape::~FeatherBboTape() = default;
-
 FeatherBboTape::FeatherBboTape(std::string path, std::string symbol)
-    : path_(std::move(path)), symbol_(std::move(symbol)), slab_(std::make_unique<DaySlabPool>()) {
+    : path_(std::move(path)), symbol_(std::move(symbol)) {
     if (symbol_.empty()) {
         throw std::invalid_argument(
             "feather dataset needs a symbol (Databento raw_symbol, e.g. MGCZ5): " + path_);
@@ -410,6 +416,8 @@ FeatherBboTape::FeatherBboTape(std::string path, std::string symbol)
     if (parts_.empty()) {
         throw std::runtime_error("no feather parts (manifest.json) under: " + path_);
     }
+    const RowCursor start = FirstRow(path_, parts_, symbol_);
+    stream_ = std::make_unique<Stream>(parts_, symbol_, start);
     pending_.bids.reserve(1);
     pending_.asks.reserve(1);
     if (!ReadOneInto(pending_)) {
@@ -443,77 +451,321 @@ std::optional<SnapshotEvent> FeatherBboTape::Next() {
     return event;
 }
 
-bool FeatherBboTape::LoadNextPart() {
-    rows_.clear();
-    row_ = 0;
-    while (next_part_ < parts_.size()) {
-        const ListedPart info = std::move(parts_[next_part_++]);
-        const fs::path& file = info.file;
-        if (info.instrument_ids.empty()) {
-            continue;
+struct OpenPart {
+    static constexpr int kCap = 64;
+
+    fs::path file;
+    std::shared_ptr<arrow::io::ReadableFile> input;
+    std::shared_ptr<arrow::ipc::RecordBatchFileReader> reader;
+    std::shared_ptr<arrow::RecordBatch> batch;
+    int shown = -1;
+    int depth = 0;
+    const arrow::UInt64Array* ts = nullptr;
+    const arrow::UInt32Array* ids = nullptr;
+    const arrow::Int64Array* bid_px[kCap]{};
+    const arrow::Int64Array* ask_px[kCap]{};
+    const arrow::UInt32Array* bid_sz[kCap]{};
+    const arrow::UInt32Array* ask_sz[kCap]{};
+
+    static OpenPart& Get(const fs::path& path) {
+        static std::mutex mu;
+        static std::unordered_map<std::string, std::unique_ptr<OpenPart>> open;
+        std::lock_guard lock(mu);
+        const std::string key = path.string();
+        std::unique_ptr<OpenPart>& slot = open[key];
+        if (slot == nullptr) {
+            slot = std::make_unique<OpenPart>();
+            slot->Open(path);
         }
-        const auto input = Unwrap(arrow::io::ReadableFile::Open(file.string()), file);
+        return *slot;
+    }
+
+    void Open(const fs::path& path) {
+        file = path;
+        input = Unwrap(arrow::io::ReadableFile::Open(path.string()), path);
         arrow::ipc::IpcReadOptions options;
-        options.memory_pool = slab_.get();
         options.use_threads = false;
-        const auto reader = Unwrap(arrow::ipc::RecordBatchFileReader::Open(input, options), file);
-        for (int b = 0; b < reader->num_record_batches(); ++b) {
-            const auto batch = Unwrap(reader->ReadRecordBatch(b), file);
-            const auto& ts = Column<arrow::UInt64Type>(*batch, "ts_recv", file);
-            const auto& ids = Column<arrow::UInt32Type>(*batch, "instrument_id", file);
-            const auto& bid_px = Column<arrow::Int64Type>(*batch, "bid_px_00", file);
-            const auto& ask_px = Column<arrow::Int64Type>(*batch, "ask_px_00", file);
-            const auto& bid_sz = Column<arrow::UInt32Type>(*batch, "bid_sz_00", file);
-            const auto& ask_sz = Column<arrow::UInt32Type>(*batch, "ask_sz_00", file);
-            std::size_t keep = 0;
-            for (std::int64_t i = 0; i < batch->num_rows(); ++i) {
-                if (info.instrument_ids.contains(ids.Value(i))) {
-                    ++keep;
-                }
-            }
-            if (rows_.capacity() < keep) {
-                const std::size_t shortage = keep - rows_.capacity();
-                rows_.reserve(rows_.capacity() + shortage * 2);
-            }
-            for (std::int64_t i = 0; i < batch->num_rows(); ++i) {
-                if (info.instrument_ids.contains(ids.Value(i))) {
-                    rows_.push_back(Row{.ts_ns = ts.Value(i),
-                                        .bid_px = bid_px.Value(i),
-                                        .ask_px = ask_px.Value(i),
-                                        .bid_sz = bid_sz.Value(i),
-                                        .ask_sz = ask_sz.Value(i)});
-                }
-            }
+        reader = Unwrap(arrow::ipc::RecordBatchFileReader::Open(input, options), path);
+    }
+
+    void Show(int batch_no) {
+        if (shown == batch_no && batch != nullptr) {
+            return;
         }
-        if (!rows_.empty()) {
-            price_scale_ = info.price_scale;
-            return true;
+        batch.reset();
+        batch = Unwrap(reader->ReadRecordBatch(batch_no), file);
+        shown = batch_no;
+        ts = &Column<arrow::UInt64Type>(*batch, "ts_recv", file);
+        ids = &Column<arrow::UInt32Type>(*batch, "instrument_id", file);
+        depth = 0;
+        for (; depth < kCap; ++depth) {
+            char bid_px_name[16];
+            char ask_px_name[16];
+            char bid_sz_name[16];
+            char ask_sz_name[16];
+            std::snprintf(bid_px_name, sizeof(bid_px_name), "bid_px_%02d", depth);
+            std::snprintf(ask_px_name, sizeof(ask_px_name), "ask_px_%02d", depth);
+            std::snprintf(bid_sz_name, sizeof(bid_sz_name), "bid_sz_%02d", depth);
+            std::snprintf(ask_sz_name, sizeof(ask_sz_name), "ask_sz_%02d", depth);
+            if (batch->GetColumnByName(bid_px_name) == nullptr) {
+                break;
+            }
+            bid_px[depth] = &Column<arrow::Int64Type>(*batch, bid_px_name, file);
+            ask_px[depth] = &Column<arrow::Int64Type>(*batch, ask_px_name, file);
+            bid_sz[depth] = &Column<arrow::UInt32Type>(*batch, bid_sz_name, file);
+            ask_sz[depth] = &Column<arrow::UInt32Type>(*batch, ask_sz_name, file);
+        }
+        if (depth == 0) {
+            throw std::runtime_error("arrow: " + file.string() + ": no bid_px_00 column");
         }
     }
-    return false;
+};
+
+FeatherBboTape::RowCursor FeatherBboTape::FirstRow(const std::string& key,
+                                                      const std::vector<ListedPart>& parts,
+                                                      const std::string& symbol) {
+    struct Index {
+        std::unordered_map<std::string, RowCursor> at;
+    };
+    static std::mutex mu;
+    static std::unordered_map<std::string, Index> cache;
+    std::lock_guard lock(mu);
+    const auto existing = cache.find(key);
+    if (existing == cache.end()) {
+        Index built;
+        std::unordered_set<std::string> waiting;
+        for (const ListedPart& part : parts) {
+            if (part.meta == nullptr) {
+                continue;
+            }
+            for (const std::string& name : part.meta->symbols) {
+                waiting.insert(name);
+            }
+        }
+        for (std::size_t p = 0; p < parts.size() && !waiting.empty(); ++p) {
+            const ListedPart& part = parts[p];
+            if (part.meta == nullptr) {
+                continue;
+            }
+            OpenPart& file = OpenPart::Get(part.file);
+            if (file.reader->num_record_batches() <= 0) {
+                continue;
+            }
+            for (int b = 0; b < file.reader->num_record_batches() && !waiting.empty(); ++b) {
+                file.Show(b);
+                const std::int64_t rows = file.batch->num_rows();
+                for (std::int64_t r = 0; r < rows && !waiting.empty(); ++r) {
+                    const auto id = part.meta->id_to_symbol.find(file.ids->Value(r));
+                    if (id == part.meta->id_to_symbol.end()) {
+                        continue;
+                    }
+                    if (waiting.erase(id->second) == 0) {
+                        continue;
+                    }
+                    built.at.emplace(id->second, RowCursor{.part = p, .batch = b, .row = r, .found = true});
+                }
+            }
+        }
+        cache.emplace(key, std::move(built));
+    }
+    const auto at = cache.find(key)->second.at.find(symbol);
+    if (at == cache.find(key)->second.at.end()) {
+        return {};
+    }
+    return at->second;
 }
 
-bool FeatherBboTape::ReadOneInto(SnapshotEvent& out) {
-    while (row_ >= rows_.size()) {
-        if (!LoadNextPart()) {
-            return false;
+struct FeatherBboTape::Stream {
+    explicit Stream(const std::vector<ListedPart>& parts, const std::string& symbol, RowCursor start)
+        : parts_(&parts),
+          all_(symbol.empty()),
+          part_(all_ || start.found ? start.part : parts.size()),
+          batch_(start.batch),
+          row_(start.row) {
+        if (all_) {
+            return;
+        }
+        for (const ListedPart& part : parts) {
+            if (part.meta == nullptr) {
+                continue;
+            }
+            for (const auto& [id, name] : part.meta->id_to_symbol) {
+                if (name == symbol) {
+                    ids_.insert(id);
+                }
+            }
         }
     }
-    const Row& row = rows_[row_++];
-    out.seq = ++seq_;
-    out.ts_ns = row.ts_ns;
-    out.symbol = symbol_;
-    out.bids.clear();
-    out.asks.clear();
-    if (row.bid_px != kUndefPrice && row.bid_sz > 0) {
-        out.bids.push_back(Level{.price = static_cast<double>(row.bid_px) / price_scale_,
-                                 .qty = row.bid_sz});
+
+    [[nodiscard]] bool Next(std::uint64_t& seq, const std::string& symbol, population::SnapshotEvent& out) {
+#if CMF_HOT_LOG
+        const auto t0 = std::chrono::steady_clock::now();
+#endif
+        const bool ok = NextBody(seq, symbol, out);
+#if CMF_HOT_LOG
+        const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now() - t0)
+                            .count();
+        static std::uint64_t acc_ns = 0;
+        static std::uint64_t acc_n = 0;
+        static auto last = std::chrono::steady_clock::now();
+        acc_ns += static_cast<std::uint64_t>(ns);
+        ++acc_n;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last >= std::chrono::seconds(5)) {
+            std::fprintf(stderr, "hot feather ms=%.0f calls=%llu\n", acc_ns / 1e6,
+                         static_cast<unsigned long long>(acc_n));
+            acc_ns = 0;
+            acc_n = 0;
+            last = now;
+        }
+#endif
+        return ok;
     }
-    if (row.ask_px != kUndefPrice && row.ask_sz > 0) {
-        out.asks.push_back(Level{.price = static_cast<double>(row.ask_px) / price_scale_,
-                                 .qty = row.ask_sz});
+
+    [[nodiscard]] bool NextBody(std::uint64_t& seq, const std::string& symbol, population::SnapshotEvent& out) {
+        while (part_ < parts_->size()) {
+            const ListedPart& part = (*parts_)[part_];
+            OpenPart& file = OpenPart::Get(part.file);
+            if (file.reader->num_record_batches() <= 0) {
+                ++part_;
+                batch_ = 0;
+                row_ = 0;
+                continue;
+            }
+            if (batch_ >= file.reader->num_record_batches()) {
+                ++part_;
+                batch_ = 0;
+                row_ = 0;
+                continue;
+            }
+            file.Show(batch_);
+            if (row_ >= file.batch->num_rows()) {
+                ++batch_;
+                row_ = 0;
+                continue;
+            }
+            const std::uint32_t id = file.ids->Value(row_);
+            std::string row_symbol = symbol;
+            if (all_) {
+                if (part.meta == nullptr) {
+                    ++row_;
+                    continue;
+                }
+                const auto found = part.meta->id_to_symbol.find(id);
+                if (found == part.meta->id_to_symbol.end()) {
+                    ++row_;
+                    continue;
+                }
+                row_symbol = found->second;
+            } else if (!ids_.contains(id)) {
+                ++row_;
+                continue;
+            }
+            out.seq = ++seq;
+            out.ts_ns = file.ts->Value(row_);
+            out.symbol = std::move(row_symbol);
+            out.bids.clear();
+            out.asks.clear();
+            const double scale = part.meta->price_scale;
+            for (int lvl = 0; lvl < file.depth; ++lvl) {
+                const auto px = file.bid_px[lvl]->Value(row_);
+                const auto sz = file.bid_sz[lvl]->Value(row_);
+                if (px == kUndefPrice || sz == 0) {
+                    break;
+                }
+                out.bids.push_back(population::Level{.price = static_cast<double>(px) / scale, .qty = sz});
+            }
+            for (int lvl = 0; lvl < file.depth; ++lvl) {
+                const auto px = file.ask_px[lvl]->Value(row_);
+                const auto sz = file.ask_sz[lvl]->Value(row_);
+                if (px == kUndefPrice || sz == 0) {
+                    break;
+                }
+                out.asks.push_back(population::Level{.price = static_cast<double>(px) / scale, .qty = sz});
+            }
+            ++row_;
+            return true;
+        }
+        return false;
     }
+
+    const std::vector<ListedPart>* parts_ = nullptr;
+    bool all_ = false;
+    std::unordered_set<std::uint32_t> ids_;
+    std::size_t part_ = 0;
+    int batch_ = 0;
+    std::int64_t row_ = 0;
+};
+
+FeatherBboTape::~FeatherBboTape() = default;
+
+bool FeatherBboTape::ReadOneInto(SnapshotEvent& out) {
+    return stream_->Next(seq_, symbol_, out);
+}
+
+struct FeatherJournal::Body {
+    std::vector<FeatherBboTape::ListedPart> parts;
+    std::unique_ptr<FeatherBboTape::Stream> stream;
+    std::uint64_t seq = 0;
+};
+
+FeatherJournal::FeatherJournal(std::string path) : body_(std::make_unique<Body>()) {
+    FeatherBboTape::CollectInto(fs::path(path), body_->parts);
+    if (body_->parts.empty()) {
+        throw std::runtime_error("no feather parts (manifest.json) under: " + path);
+    }
+    body_->stream = std::make_unique<FeatherBboTape::Stream>(body_->parts, "", FeatherBboTape::RowCursor{});
+}
+
+FeatherJournal::~FeatherJournal() = default;
+
+bool FeatherJournal::Next(std::string& symbol, population::SnapshotEvent& out) {
+    if (!body_->stream->Next(body_->seq, "", out)) {
+        return false;
+    }
+    symbol = out.symbol;
     return true;
+}
+
+std::vector<std::string> ListFeatherSymbols(const std::string& path) {
+    std::vector<std::string> symbols;
+    std::unordered_set<std::string> seen;
+    const auto take = [&](const fs::path& dir) {
+        const auto meta = FeatherBboTape::CachedDir(dir);
+        for (const std::string& symbol : meta->symbols) {
+            if (seen.insert(symbol).second) {
+                symbols.push_back(symbol);
+            }
+        }
+    };
+    const std::function<void(const fs::path&)> walk = [&](const fs::path& dir) {
+        if (fs::is_regular_file(dir / "manifest.json")) {
+            take(dir);
+            return;
+        }
+        if (!fs::is_directory(dir)) {
+            return;
+        }
+        std::vector<fs::path> subdirs;
+        for (const auto& entry : fs::directory_iterator(dir)) {
+            if (entry.is_directory()) {
+                subdirs.push_back(entry.path());
+            }
+        }
+        std::sort(subdirs.begin(), subdirs.end());
+        for (const fs::path& sub : subdirs) {
+            walk(sub);
+        }
+    };
+    const fs::path root(path);
+    if (fs::is_regular_file(root)) {
+        walk(root.parent_path());
+    } else {
+        walk(root);
+    }
+    std::sort(symbols.begin(), symbols.end());
+    return symbols;
 }
 
 }  // namespace dataset
